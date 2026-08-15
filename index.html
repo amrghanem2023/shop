@@ -284,7 +284,19 @@ function shopDocRef(uid){ return fbStore.collection('shops').doc(uid); }
 function subscribeShop(uid){
   if(unsubscribeShop) unsubscribeShop();
   unsubscribeShop = shopDocRef(uid).onSnapshot(snap=>{
-    if(!snap.exists) return; // لسه بيتعمل create في التسجيل
+    if(!snap.exists){
+      // حساب موجود في Auth بس مستند المحل مش موجود (غالباً حصل خطأ وقت إنشاء الحساب) - ننشئه دلوقتي تلقائي
+      const shopCode = uid.slice(0,8).toUpperCase();
+      const initialDb = seedDB();
+      shopDocRef(uid).set({
+        db: initialDb,
+        meta: {shopCode, activated:false, trialStart: firebase.firestore.FieldValue.serverTimestamp(), createdAt: firebase.firestore.FieldValue.serverTimestamp()}
+      }).catch(err=>{
+        console.error('auto-create shop doc failed', err);
+        toast('تعذر إنشاء بيانات المحل، جرب تحدّث الصفحة','err');
+      });
+      return; // هيتنادى onSnapshot تاني تلقائي بمجرد ما المستند يتعمل
+    }
     const data = snap.data() || {};
     DB = data.db || seedDB();
     dbMeta = data.meta || {};
@@ -2322,7 +2334,14 @@ function bindSheetDynamic(){
 /* ================= INIT (بوابة الدخول السحابية) ================= */
 document.getElementById('bottomNav').style.display = 'none';
 document.getElementById('mainContainer').innerHTML = '<div style="text-align:center; padding:60px 20px; color:var(--muted);">⏳ جاري الاتصال بالسحابة...</div>';
+let _authResolved = false;
+setTimeout(()=>{
+  if(!_authResolved){
+    document.getElementById('mainContainer').innerHTML = '<div style="text-align:center; padding:60px 20px; color:var(--muted);">⚠️ الاتصال بالسحابة بياخد وقت أطول من المعتاد.<br><br><button class="big-btn ghost sm" onclick="location.reload()" style="margin-top:14px;">🔄 إعادة تحميل الصفحة</button></div>';
+  }
+}, 12000);
 fbAuth.onAuthStateChanged(function(user){
+  _authResolved = true;
   if(user){
     fbUser = user;
     subscribeShop(user.uid);
