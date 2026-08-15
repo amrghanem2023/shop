@@ -321,6 +321,24 @@ const TRIAL_DAYS = 14;
 const OWNER_CODE = 'AMRGHANEM-KOTSHI-OWNER-2026';
 const LICENSE_SECRET = 'KOTSHI-AG-2026'; // لازم يكون نفسه في مولّد الأكواد
 
+/* ===== Super Admin (صاحب التطبيق) - يشوف كل المحلات المسجلة ===== */
+const SUPER_ADMIN_EMAILS = ['aahmedghanem1974@gmail.com'];
+function isSuperAdmin(){ return !!(fbUser && fbUser.email && SUPER_ADMIN_EMAILS.includes(fbUser.email.toLowerCase())); }
+let _allShopsCache = null;
+let _allShopsLoading = false;
+function fetchAllShopsAndRender(){
+  if(_allShopsLoading) return;
+  _allShopsLoading = true;
+  fbStore.collection('shops').get().then(snap=>{
+    _allShopsCache = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    _allShopsLoading = false;
+    if(DB && DB.currentView==='admin-allshops'){ render(); }
+  }).catch(err=>{
+    _allShopsLoading = false;
+    toast('تعذر تحميل قائمة المحلات: ' + (err.message||''), 'err');
+  });
+}
+
 function trialDaysLeft(){
   if(!dbMeta.trialStart) return TRIAL_DAYS; // لسه بيتسجل وقت الإنشاء (serverTimestamp)
   const start = dbMeta.trialStart.toDate ? dbMeta.trialStart.toDate() : new Date(dbMeta.trialStart);
@@ -759,6 +777,7 @@ function render(){
   else if(v==='admin-expenses') c.innerHTML = renderAdminExpenses();
   else if(v==='admin-returns') c.innerHTML = renderAdminReturns();
   else if(v==='admin-settings') c.innerHTML = renderAdminSettings();
+  else if(v==='admin-allshops') c.innerHTML = renderAdminAllShops();
   updateCartBadge();
   bindDynamic();
 }
@@ -1023,9 +1042,54 @@ function adminTabsHTML(active){
     ['admin-dashboard','📊 لوحة التحكم'], ['admin-inventory','📦 المخزون'], ['admin-stocktake','📋 الجرد'], ['admin-pos','🧾 نقطة البيع'],
     ['admin-orders','🚚 الطلبات'], ['admin-customers','👥 العملاء'], ['admin-expenses','💰 المصاريف والأرباح'], ['admin-returns','↩️ مرتجعات'], ['admin-settings','⚙️ إعدادات الفاتورة']
   ];
+  if(isSuperAdmin()) tabs.push(['admin-allshops','🛡️ كل المحلات']);
   return `<div class="tabbar-scroll"><div class="admin-tabs">${tabs.map(t=>`<button class="atab ${active===t[0]?'active':''}" data-nav-go="${t[0]}">${t[1]}</button>`).join('')}
   <button class="atab" style="background:var(--danger); border-color:var(--danger); color:#fff;" id="btnLogoutAdmin">خروج</button>
   </div></div>`;
+}
+
+/* ================= SUPER ADMIN: كل المحلات ================= */
+function renderAdminAllShops(){
+  if(!isSuperAdmin()) return `${adminTabsHTML('admin-allshops')}<div style="text-align:center;padding:40px;color:var(--muted);">غير مصرح لك بالدخول هنا</div>`;
+  if(_allShopsCache===null){
+    fetchAllShopsAndRender();
+    return `${adminTabsHTML('admin-allshops')}<div style="text-align:center;padding:60px 20px;color:var(--muted);">⏳ جاري تحميل كل المحلات...</div>`;
+  }
+  const shops = _allShopsCache.slice().sort((a,b)=>{
+    const ta = a.meta && a.meta.createdAt && a.meta.createdAt.toDate ? a.meta.createdAt.toDate().getTime() : 0;
+    const tb = b.meta && b.meta.createdAt && b.meta.createdAt.toDate ? b.meta.createdAt.toDate().getTime() : 0;
+    return tb - ta;
+  });
+  const activatedCount = shops.filter(s=> s.meta && s.meta.activated).length;
+  const rows = shops.map(s=>{
+    const meta = s.meta||{};
+    const db = s.db||{};
+    const settings = db.settings||{};
+    const created = meta.createdAt && meta.createdAt.toDate ? meta.createdAt.toDate().toLocaleString('ar-EG') : '—';
+    const productsCount = (db.products||[]).length;
+    const ordersCount = (db.orders||[]).length;
+    return `<div class="order-card">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+        <b>${settings.shopName || 'بدون اسم'}</b>
+        <span class="tag" style="background:${meta.activated? 'var(--accent2)':'var(--danger)'}; color:#fff;">${meta.activated? 'مفعّل ✓':'تجريبي'}</span>
+      </div>
+      <div style="font-size:12px; color:var(--muted); margin-top:6px; line-height:1.9;">
+        كود المحل: <span style="font-family:monospace;">${meta.shopCode||'—'}</span><br>
+        تاريخ الإنشاء: ${created}<br>
+        عدد المنتجات: ${productsCount} | عدد الطلبات: ${ordersCount}<br>
+        UID: <span style="font-family:monospace; font-size:10.5px;">${s.id}</span>
+      </div>
+    </div>`;
+  }).join('') || '<div style="text-align:center; padding:20px; color:var(--muted);">لا يوجد محلات مسجلة</div>';
+  return `${adminTabsHTML('admin-allshops')}
+  <div class="section-title">كل المحلات المسجلة <span class="tag">${shops.length}</span></div>
+  <div class="kpi-grid" style="margin-bottom:10px;">
+    <div class="kpi accent"><div class="l">إجمالي المحلات</div><div class="v">${shops.length}</div></div>
+    <div class="kpi green"><div class="l">مفعّل</div><div class="v">${activatedCount}</div></div>
+    <div class="kpi danger"><div class="l">تجريبي</div><div class="v">${shops.length-activatedCount}</div></div>
+  </div>
+  <button class="big-btn ghost sm" id="btnRefreshAllShops">🔄 تحديث القائمة</button>
+  <div style="margin-top:12px;">${rows}</div>`;
 }
 
 /* ================= ADMIN DASHBOARD ================= */
@@ -2198,6 +2262,8 @@ function bindDynamic(){
   if(btnOpenActivateSettings) btnOpenActivateSettings.addEventListener('click', ()=> openSheet(activationSheetHTML()));
   const btnLogoutShop = document.getElementById('btnLogoutShop');
   if(btnLogoutShop) btnLogoutShop.addEventListener('click', ()=>{ if(confirm('هل تريد تسجيل الخروج؟')) doLogout(); });
+  const btnRefreshAllShops = document.getElementById('btnRefreshAllShops');
+  if(btnRefreshAllShops) btnRefreshAllShops.addEventListener('click', ()=>{ _allShopsCache=null; render(); });
 
 }
 
