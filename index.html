@@ -304,9 +304,13 @@ function subscribeShop(uid){
     try{ localStorage.setItem(DB_KEY, JSON.stringify(DB)); }catch(e){}
     DB.currentView = DB.currentView || localStorage.getItem(VIEW_KEY) || 'shop';
     setNav(DB.currentView);
+    maybeAutoBackup();
+    updateConnBanner(); // اتزامنّا مع السحابة فعلاً، نرجّع حالة البانر للوضع الطبيعي
   }, err=>{
     console.error('Firestore sync error', err);
     toast('تعذر الاتصال بالسحابة، هيتم العمل من آخر نسخة محفوظة على الجهاز','err');
+    const banner = document.getElementById('connStatusBanner');
+    if(banner){ banner.textContent = '🔌 تعذر الاتصال بالسحابة — بتشتغل من آخر نسخة محفوظة على الجهاز'; banner.style.display = 'block'; }
     const raw = localStorage.getItem(DB_KEY);
     DB = raw ? JSON.parse(raw) : seedDB();
     ensureDBDefaults();
@@ -2018,6 +2022,22 @@ function backupJson(){
   const blob = new Blob([JSON.stringify(DB,null,2)], {type:'application/json'});
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'kotshiyat-backup.json'; a.click();
 }
+/* نسخة احتياطية تلقائية يومية (مرة واحدة كل يوم لكل جهاز، بدون إزعاج المستخدم) */
+const AUTO_BACKUP_KEY = 'kotshiyat_lastAutoBackup';
+function maybeAutoBackup(){
+  try{
+    const today = new Date().toISOString().slice(0,10); // YYYY-MM-DD
+    const last = localStorage.getItem(AUTO_BACKUP_KEY);
+    if(last === today) return; // اتعمل النهاردة بالفعل
+    if(!DB || !Array.isArray(DB.products)) return; // البيانات لسه ماتحمّلتش كامل
+    const blob = new Blob([JSON.stringify(DB,null,2)], {type:'application/json'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'kotshiyat-backup-auto-' + today + '.json';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    localStorage.setItem(AUTO_BACKUP_KEY, today);
+  }catch(e){ console.error('auto backup failed', e); }
+}
 function restoreJson(file){
   const reader = new FileReader();
   reader.onload = e=>{
@@ -2331,12 +2351,51 @@ function bindSheetDynamic(){
   });
 }
 
+/* ================= حالة الاتصال بالإنترنت (Online/Offline Banner) ================= */
+function ensureConnBanner(){
+  let b = document.getElementById('connStatusBanner');
+  if(!b){
+    b = document.createElement('div');
+    b.id = 'connStatusBanner';
+    b.style.cssText = 'display:none; position:sticky; top:0; z-index:999; text-align:center; padding:7px 10px; font-size:12.5px; font-weight:700; background:#7a4d00; color:#fff;';
+    document.body.insertBefore(b, document.body.firstChild);
+  }
+  return b;
+}
+function updateConnBanner(){
+  const b = ensureConnBanner();
+  if(navigator.onLine === false){
+    b.textContent = '🔌 مفيش اتصال بالإنترنت — بتشتغل من آخر نسخة محفوظة، والتعديلات هتتزامن تلقائي أول ما النت يرجع';
+    b.style.display = 'block';
+  } else {
+    b.style.display = 'none';
+  }
+}
+window.addEventListener('online', updateConnBanner);
+window.addEventListener('offline', updateConnBanner);
+
 /* ================= INIT (بوابة الدخول السحابية) ================= */
 document.getElementById('bottomNav').style.display = 'none';
 document.getElementById('mainContainer').innerHTML = '<div style="text-align:center; padding:60px 20px; color:var(--muted);">⏳ جاري الاتصال بالسحابة...</div>';
+updateConnBanner();
 let _authResolved = false;
 setTimeout(()=>{
-  if(!_authResolved){
+  if(_authResolved) return;
+  const raw = localStorage.getItem(DB_KEY);
+  if(raw){
+    // مفيش رد من السحابة لحد دلوقتي، بس عندنا نسخة محفوظة على الجهاز - نشتغل بيها فورًا
+    try{
+      DB = JSON.parse(raw);
+      ensureDBDefaults();
+      DB.currentView = localStorage.getItem(VIEW_KEY) || 'shop';
+      const b = ensureConnBanner();
+      b.textContent = '🔌 بتشتغل من آخر نسخة محفوظة على الجهاز — هيتزامن تلقائي أول ما الاتصال بالسحابة يرجع';
+      b.style.display = 'block';
+      setNav(DB.currentView);
+    }catch(e){
+      document.getElementById('mainContainer').innerHTML = '<div style="text-align:center; padding:60px 20px; color:var(--muted);">⚠️ الاتصال بالسحابة بياخد وقت أطول من المعتاد.<br><br><button class="big-btn ghost sm" onclick="location.reload()" style="margin-top:14px;">🔄 إعادة تحميل الصفحة</button></div>';
+    }
+  } else {
     document.getElementById('mainContainer').innerHTML = '<div style="text-align:center; padding:60px 20px; color:var(--muted);">⚠️ الاتصال بالسحابة بياخد وقت أطول من المعتاد.<br><br><button class="big-btn ghost sm" onclick="location.reload()" style="margin-top:14px;">🔄 إعادة تحميل الصفحة</button></div>';
   }
 }, 12000);
