@@ -309,12 +309,55 @@ function deleteProductImagesFromStorage(productId){
 let fbUser = null;
 let dbMeta = {};
 let unsubscribeShop = null;
+let unsubscribeOrders = null;
 let saveDebounceTimer = null;
 
 function shopDocRef(uid){ return fbStore.collection('shops').doc(uid); }
 
+/* ================= الطلبات (orders) في subcollection منفصل =================
+   السبب: الطلبات بتتراكم من غير توقف (كل عملية بيع = طلب جديد بيفضل محفوظ للأبد)،
+   فلو فضلت جوه نفس مستند المحل هتوصله لحد الـ1 ميجابايت بسرعة. بدل كده كل طلب
+   بقى مستند مستقل تحت shops/{uid}/orders/{orderId}. */
+function ordersRef(uid){ return shopDocRef(uid).collection('orders'); }
+function saveOrderRemote(order){
+  if(!fbUser) return;
+  ordersRef(fbUser.uid).doc(order.id).set(order).catch(err=>{
+    console.error('order save failed', err);
+    toast('تعذر حفظ الطلب على السحابة، هيعاد المحاولة لاحقًا','err');
+  });
+}
+function deleteOrderRemote(oid){
+  if(!fbUser) return;
+  ordersRef(fbUser.uid).doc(oid).delete().catch(err=> console.error('order delete failed', err));
+}
+function subscribeOrders(uid){
+  if(unsubscribeOrders) unsubscribeOrders();
+  unsubscribeOrders = ordersRef(uid).onSnapshot(snap=>{
+    DB.orders = snap.docs.map(d=> d.data());
+    if(DB.currentView) render();
+  }, err=> console.error('orders sync error', err));
+}
+// ترحيل تلقائي (مرة واحدة فقط) للطلبات القديمة اللي كانت متخزنة جوه مستند المحل نفسه
+async function migrateOrdersIfNeeded(uid, legacyOrders){
+  if(!legacyOrders || !legacyOrders.length) return;
+  try{
+    const chunkSize = 400; // أقل من حد الـ500 كتابة لكل batch في فايرستور
+    for(let i=0;i<legacyOrders.length;i+=chunkSize){
+      const batch = fbStore.batch();
+      legacyOrders.slice(i,i+chunkSize).forEach(o=> batch.set(ordersRef(uid).doc(o.id), o));
+      await batch.commit();
+    }
+    await shopDocRef(uid).update({'db.orders': firebase.firestore.FieldValue.delete(), 'meta.ordersMigrated': true});
+    console.log('تم ترحيل', legacyOrders.length, 'طلب لمستندات منفصلة');
+  }catch(err){
+    console.error('orders migration failed', err);
+  }
+}
+
 function subscribeShop(uid){
   if(unsubscribeShop) unsubscribeShop();
+  if(unsubscribeOrders) unsubscribeOrders();
+  let migrationChecked = false;
   unsubscribeShop = shopDocRef(uid).onSnapshot(snap=>{
     if(!snap.exists){
       // حساب موجود في Auth بس مستند المحل مش موجود (غالباً حصل خطأ وقت إنشاء الحساب) - ننشئه دلوقتي تلقائي
@@ -322,7 +365,7 @@ function subscribeShop(uid){
       const initialDb = seedDB();
       shopDocRef(uid).set({
         db: initialDb,
-        meta: {shopCode, activated:false, trialStart: firebase.firestore.FieldValue.serverTimestamp(), createdAt: firebase.firestore.FieldValue.serverTimestamp()}
+        meta: {shopCode, activated:false, ordersMigrated:true, trialStart: firebase.firestore.FieldValue.serverTimestamp(), createdAt: firebase.firestore.FieldValue.serverTimestamp()}
       }).catch(err=>{
         console.error('auto-create shop doc failed', err);
         toast('تعذر إنشاء بيانات المحل، جرب تحدّث الصفحة','err');
@@ -338,6 +381,15 @@ function subscribeShop(uid){
     setNav(DB.currentView);
     maybeAutoBackup();
     updateConnBanner(); // اتزامنّا مع السحابة فعلاً، نرجّع حالة البانر للوضع الطبيعي
+    if(!migrationChecked){
+      migrationChecked = true;
+      const legacyOrders = DB.orders;
+      if(!dbMeta.ordersMigrated && legacyOrders && legacyOrders.length){
+        migrateOrdersIfNeeded(uid, legacyOrders).finally(()=> subscribeOrders(uid));
+      } else {
+        subscribeOrders(uid);
+      }
+    }
   }, err=>{
     console.error('Firestore sync error', err);
     toast('تعذر الاتصال بالسحابة، هيتم العمل من آخر نسخة محفوظة على الجهاز','err');
@@ -568,6 +620,7 @@ function loginErrorAr(err){
 }
 function doLogout(){
   if(unsubscribeShop){ unsubscribeShop(); unsubscribeShop=null; }
+  if(unsubscribeOrders){ unsubscribeOrders(); unsubscribeOrders=null; }
   fbAuth.signOut();
 }
 </script>
@@ -635,6 +688,7 @@ function ensureDBDefaults(){
   if(DB.settings.setupDone===undefined) DB.settings.setupDone = false;
   if(!DB.returns) DB.returns = [];
   if(!DB.expenses) DB.expenses = [];
+  if(!DB.orders) DB.orders = [];
 }
 const FIRESTORE_DOC_LIMIT_BYTES = 1048576; // حد فايرستور الرسمي لحجم أي مستند
 function saveDB(){
@@ -646,7 +700,10 @@ function saveDB(){
   if(!fbUser) return;
   clearTimeout(saveDebounceTimer);
   saveDebounceTimer = setTimeout(()=>{
-    const payload = {db: DB};
+    // الطلبات (orders) بقت في subcollection منفصل — مش بتتبعت جوه مستند المحل الرئيسي تاني
+    const dbForCloud = {...DB};
+    delete dbForCloud.orders;
+    const payload = {db: dbForCloud};
     const approxSize = new Blob([JSON.stringify(payload)]).size;
     if(approxSize > FIRESTORE_DOC_LIMIT_BYTES * 0.85){
       toast('⚠️ بيانات المحل قربت من الحد الأقصى المسموح به — كلّم الدعم الفني عشان نظبطلك الأرشفة', 'err');
@@ -1019,6 +1076,7 @@ function checkout(){
     total, status:'قيد التجهيز', date: new Date().toISOString(), paymentMethod:'كاش عند الاستلام'
   };
   DB.orders.push(order);
+  saveOrderRemote(order);
   DB.cart.forEach(i=> adjInv(i.productId, i.size, i.color, -i.qty));
   DB.cart = [];
   saveDB();
@@ -1546,6 +1604,7 @@ function completeSale(){
     isTaxInvoice:isTax, invoiceNo, netAmount:vb.net, vatAmount:vb.vat, vatRate:vb.rate
   };
   DB.orders.push(order);
+  saveOrderRemote(order);
   window._pos.cart.forEach(i=> adjInv(i.productId,i.size,i.color,-i.qty));
   saveDB();
   printInvoice(order);
@@ -1690,6 +1749,7 @@ function saveOrderEdit(oid){
     });
   }
   o.status = newStatus;
+  saveOrderRemote(o);
   saveDB(); toast('تم حفظ التعديل ✓','ok'); closeSheet(); render();
 }
 function deleteOrder(oid){
@@ -1704,6 +1764,7 @@ function deleteOrder(oid){
   if(o.shipping && o.shipping._expenseId){ DB.expenses = DB.expenses.filter(e=>e.id!==o.shipping._expenseId); }
   DB.orders = DB.orders.filter(x=>x.id!==oid);
   DB.returns = DB.returns.filter(r=>r.orderId!==oid);
+  deleteOrderRemote(oid);
   saveDB(); render(); toast('تم حذف الطلب','ok');
 }
 function setOrderStatus(oid, status){
@@ -1715,7 +1776,9 @@ function setOrderStatus(oid, status){
     });
     if(o.shipping && o.shipping._expenseId){ DB.expenses = DB.expenses.filter(e=>e.id!==o.shipping._expenseId); o.shipping._expenseId=null; }
   }
-  o.status = status; saveDB(); render(); toast('تم تحديث حالة الطلب','ok');
+  o.status = status;
+  saveOrderRemote(o);
+  saveDB(); render(); toast('تم تحديث حالة الطلب','ok');
 }
 
 /* ================= SHIPPING ================= */
@@ -1779,6 +1842,7 @@ function saveShipping(oid){
 
   o.shipping = {company, trackingNumber, shipDate, eta, shippingCost, codAmount, paidBy, repPhone, notes, _expenseId:expenseId};
   o.status = 'تم الشحن';
+  saveOrderRemote(o);
   saveDB();
 
   if(sendWa && o.customerPhone){
@@ -2458,6 +2522,7 @@ fbAuth.onAuthStateChanged(function(user){
   } else {
     fbUser = null; DB = null; dbMeta = {};
     if(unsubscribeShop){ unsubscribeShop(); unsubscribeShop=null; }
+    if(unsubscribeOrders){ unsubscribeOrders(); unsubscribeOrders=null; }
     document.getElementById('bottomNav').style.display = 'none';
     const c = document.getElementById('mainContainer');
     c.innerHTML = renderLoginGate('login');
