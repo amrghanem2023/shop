@@ -13,6 +13,7 @@
 <script src="https://www.gstatic.com/firebasejs/12.17.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/12.17.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/12.17.1/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.17.1/firebase-storage-compat.js"></script>
 <style>
 :root{
   --ink:#17171B; --panel:#211F27; --panel2:#2A2732; --paper:#F3EFE6; --paper2:#EAE3D3;
@@ -272,7 +273,38 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const fbAuth = firebase.auth();
 const fbStore = firebase.firestore();
+const fbStorage = firebase.storage();
 fbStore.enablePersistence({synchronizeTabs:true}).catch(err=> console.warn('Firestore offline persistence:', err.code));
+
+/* ================= صور المنتجات: تُرفع على Firebase Storage بدل تخزينها base64 جوه مستند فايرستور =================
+   السبب: مستند فايرستور محدود بـ1 ميجابايت، ولو الصور اتخزنت جوه المنتج نفسه (base64) هيتعدى الحد بسرعة
+   مع تراكم الأصناف. فبدل كده بنرفع الصورة على Storage ونخزن رابط تحميلها (URL قصير) بس جوه المنتج. */
+async function uploadProductImage(dataUrl, productId, idx){
+  const path = `shops/${fbUser.uid}/products/${productId}/img_${idx}_${Date.now()}.jpg`;
+  const ref = fbStorage.ref(path);
+  await ref.putString(dataUrl, 'data_url', {contentType:'image/jpeg'});
+  return await ref.getDownloadURL();
+}
+async function uploadProductImages(images, productId){
+  const out = [];
+  for(let i=0;i<images.length;i++){
+    const im = images[i];
+    const isRawPhoto = typeof im === 'string' && im.startsWith('data:image') && !im.startsWith('data:image/svg+xml');
+    if(isRawPhoto && fbUser){
+      try{ out.push(await uploadProductImage(im, productId, i)); }
+      catch(err){ console.error('image upload failed, keeping local copy', err); out.push(im); }
+    } else {
+      out.push(im);
+    }
+  }
+  return out;
+}
+function deleteProductImagesFromStorage(productId){
+  if(!fbUser) return;
+  fbStorage.ref(`shops/${fbUser.uid}/products/${productId}`).listAll()
+    .then(res=> Promise.all(res.items.map(item=> item.delete().catch(()=>{}))))
+    .catch(()=>{}); // حذف Best-effort - مش هيوقف باقي العملية لو فشل
+}
 
 let fbUser = null;
 let dbMeta = {};
@@ -604,6 +636,7 @@ function ensureDBDefaults(){
   if(!DB.returns) DB.returns = [];
   if(!DB.expenses) DB.expenses = [];
 }
+const FIRESTORE_DOC_LIMIT_BYTES = 1048576; // حد فايرستور الرسمي لحجم أي مستند
 function saveDB(){
   try{ localStorage.setItem(DB_KEY, JSON.stringify(DB)); }
   catch(err){
@@ -613,7 +646,13 @@ function saveDB(){
   if(!fbUser) return;
   clearTimeout(saveDebounceTimer);
   saveDebounceTimer = setTimeout(()=>{
-    shopDocRef(fbUser.uid).set({db: DB}, {merge:true}).catch(err=>{
+    const payload = {db: DB};
+    const approxSize = new Blob([JSON.stringify(payload)]).size;
+    if(approxSize > FIRESTORE_DOC_LIMIT_BYTES * 0.85){
+      toast('⚠️ بيانات المحل قربت من الحد الأقصى المسموح به — كلّم الدعم الفني عشان نظبطلك الأرشفة', 'err');
+      console.warn('Shop doc approaching Firestore 1MB limit:', approxSize, 'bytes');
+    }
+    shopDocRef(fbUser.uid).set(payload, {merge:true}).catch(err=>{
       console.error('Firestore save failed', err);
       toast('تعذر حفظ التحديث على السحابة، هيتم إعادة المحاولة','err');
     });
@@ -1309,7 +1348,7 @@ async function handleImageFiles(fileList){
   }
   renderPfImagesPreview();
 }
-function saveProduct(pid){
+async function saveProduct(pid){
   const name = document.getElementById('pf_name').value.trim();
   const brand = document.getElementById('pf_brand').value.trim();
   const gender = document.getElementById('pf_gender').value;
@@ -1317,15 +1356,26 @@ function saveProduct(pid){
   const price = Number(document.getElementById('pf_price').value)||0;
   const cost = Number(document.getElementById('pf_cost').value)||0;
   const barcode = document.getElementById('pf_barcode').value.trim();
-  const images = (window._pfImages && window._pfImages.length) ? window._pfImages.slice() : [placeholderImg(name||'كوتشي')];
+  let images = (window._pfImages && window._pfImages.length) ? window._pfImages.slice() : [placeholderImg(name||'كوتشي')];
   const colors = document.getElementById('pf_colors').value.split(',').map(s=>s.trim()).filter(Boolean);
   const sizes = document.getElementById('pf_sizes').value.split(',').map(s=>s.trim()).filter(Boolean);
   if(!name || !brand || colors.length===0 || sizes.length===0){ toast('من فضلك أكمل كل الحقول الأساسية','err'); return; }
+
+  const productId = pid || uid('p_');
+  const btn = document.getElementById('btnSaveProduct');
+  if(btn){ btn.disabled = true; btn.textContent = 'جارٍ رفع الصور والحفظ...'; }
+  try{
+    images = await uploadProductImages(images, productId);
+  }catch(err){
+    console.error('uploadProductImages failed', err);
+  }
+  if(btn){ btn.disabled = false; btn.textContent = '💾 حفظ المنتج'; }
+
   if(pid){
     const p = DB.products.find(x=>x.id===pid);
     Object.assign(p, {name,brand,gender,material,price,cost,barcode,colors,sizes,images});
   } else {
-    const np = {id:uid('p_'), name,brand,gender,material,price,cost,barcode,colors,sizes,images};
+    const np = {id:productId, name,brand,gender,material,price,cost,barcode,colors,sizes,images};
     DB.products.push(np);
     sizes.forEach(sz=> colors.forEach(c=> setInv(np.id,sz,c,0)));
   }
@@ -1335,6 +1385,7 @@ function deleteProduct(pid){
   if(!confirm('هل تريد حذف هذا المنتج نهائياً؟')) return;
   DB.products = DB.products.filter(p=>p.id!==pid);
   DB.inventory = DB.inventory.filter(i=>i.productId!==pid);
+  deleteProductImagesFromStorage(pid);
   saveDB(); render(); toast('تم الحذف','ok');
 }
 
