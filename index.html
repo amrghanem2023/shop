@@ -279,20 +279,43 @@ fbStore.enablePersistence({synchronizeTabs:true}).catch(err=> console.warn('Fire
 /* ================= صور المنتجات: تُرفع على Firebase Storage بدل تخزينها base64 جوه مستند فايرستور =================
    السبب: مستند فايرستور محدود بـ1 ميجابايت، ولو الصور اتخزنت جوه المنتج نفسه (base64) هيتعدى الحد بسرعة
    مع تراكم الأصناف. فبدل كده بنرفع الصورة على Storage ونخزن رابط تحميلها (URL قصير) بس جوه المنتج. */
-async function uploadProductImage(dataUrl, productId, idx){
+async function uploadProductImage(dataUrl, productId, idx, onProgress){
   const path = `shops/${fbUser.uid}/products/${productId}/img_${idx}_${Date.now()}.jpg`;
   const ref = fbStorage.ref(path);
-  await ref.putString(dataUrl, 'data_url', {contentType:'image/jpeg'});
-  return await ref.getDownloadURL();
+  const task = ref.putString(dataUrl, 'data_url', {contentType:'image/jpeg'});
+  await new Promise((resolve, reject)=>{
+    task.on('state_changed',
+      snap=>{
+        const pct = Math.round((snap.bytesTransferred / snap.totalBytes) * 100);
+        if(onProgress) onProgress(pct);
+      },
+      err=> reject(err),
+      ()=> resolve()
+    );
+  });
+  return await task.snapshot.ref.getDownloadURL();
 }
-async function uploadProductImages(images, productId){
+async function uploadProductImages(images, productId, onOverallProgress){
   const out = [];
+  const rawPhotoIdxs = images
+    .map((im,i)=> ({im,i}))
+    .filter(({im})=> typeof im === 'string' && im.startsWith('data:image') && !im.startsWith('data:image/svg+xml'));
+  const totalToUpload = rawPhotoIdxs.length;
+  let uploadedCount = 0;
   for(let i=0;i<images.length;i++){
     const im = images[i];
     const isRawPhoto = typeof im === 'string' && im.startsWith('data:image') && !im.startsWith('data:image/svg+xml');
     if(isRawPhoto && fbUser){
-      try{ out.push(await uploadProductImage(im, productId, i)); }
-      catch(err){ console.error('image upload failed, keeping local copy', err); out.push(im); }
+      try{
+        out.push(await uploadProductImage(im, productId, i, pct=>{
+          if(onOverallProgress){
+            const overall = Math.round(((uploadedCount + pct/100) / totalToUpload) * 100);
+            onOverallProgress(overall, uploadedCount+1, totalToUpload);
+          }
+        }));
+        uploadedCount++;
+      }
+      catch(err){ console.error('image upload failed, keeping local copy', err); out.push(im); uploadedCount++; }
     } else {
       out.push(im);
     }
@@ -1421,9 +1444,13 @@ async function saveProduct(pid){
 
   const productId = pid || uid('p_');
   const btn = document.getElementById('btnSaveProduct');
-  if(btn){ btn.disabled = true; btn.textContent = 'جارٍ رفع الصور والحفظ...'; }
+  if(btn){ btn.disabled = true; btn.textContent = 'جارٍ رفع الصور... 0%'; }
   try{
-    images = await uploadProductImages(images, productId);
+    images = await uploadProductImages(images, productId, (overallPct, imgNum, totalImgs)=>{
+      if(btn) btn.textContent = totalImgs>1
+        ? `جارٍ رفع الصور... ${overallPct}% (${imgNum}/${totalImgs})`
+        : `جارٍ رفع الصورة... ${overallPct}%`;
+    });
   }catch(err){
     console.error('uploadProductImages failed', err);
   }
