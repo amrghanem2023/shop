@@ -719,6 +719,11 @@ function ensureDBDefaults(){
   if(!DB.returns) DB.returns = [];
   if(!DB.expenses) DB.expenses = [];
   if(!DB.orders) DB.orders = [];
+  if(!DB.suppliers) DB.suppliers = [];
+  if(!DB.supplierLedger) DB.supplierLedger = [];
+  if(!DB.supplierInstallments) DB.supplierInstallments = [];
+  if(!DB.distributors) DB.distributors = [];
+  if(!DB.distributorLedger) DB.distributorLedger = [];
 }
 const FIRESTORE_DOC_LIMIT_BYTES = 1048576; // حد فايرستور الرسمي لحجم أي مستند
 function saveDB(){
@@ -915,6 +920,7 @@ function render(){
   else if(v==='admin-stocktake') c.innerHTML = renderAdminStocktake();
   else if(v==='admin-pos') c.innerHTML = renderAdminPOS();
   else if(v==='admin-customers') c.innerHTML = renderAdminCustomers();
+  else if(v==='admin-suppliers') c.innerHTML = renderAdminSuppliers();
   else if(v==='admin-orders') c.innerHTML = renderAdminOrders();
   else if(v==='admin-expenses') c.innerHTML = renderAdminExpenses();
   else if(v==='admin-returns') c.innerHTML = renderAdminReturns();
@@ -1183,7 +1189,7 @@ function pinPress(v){
 function adminTabsHTML(active){
   const tabs = [
     ['admin-dashboard','📊 لوحة التحكم'], ['admin-inventory','📦 المخزون'], ['admin-stocktake','📋 الجرد'], ['admin-pos','🧾 نقطة البيع'],
-    ['admin-orders','🚚 الطلبات'], ['admin-customers','👥 العملاء'], ['admin-expenses','💰 المصاريف والأرباح'], ['admin-returns','↩️ مرتجعات'], ['admin-settings','⚙️ إعدادات الفاتورة']
+    ['admin-orders','🚚 الطلبات'], ['admin-customers','👥 العملاء'], ['admin-suppliers','🤝 الموردين والموزعين'], ['admin-expenses','💰 المصاريف والأرباح'], ['admin-returns','↩️ مرتجعات'], ['admin-settings','⚙️ إعدادات الفاتورة']
   ];
   if(isSuperAdmin()) tabs.push(['admin-allshops','🛡️ كل المحلات']);
   return `<div class="tabbar-scroll"><div class="admin-tabs">${tabs.map(t=>`<button class="atab ${active===t[0]?'active':''}" data-nav-go="${t[0]}">${t[1]}</button>`).join('')}
@@ -1713,7 +1719,7 @@ function renderAdminOrders(){
     const sm = statusMeta(o.status);
     return `<div class="order-card">
       <div class="top">
-        <div><div class="oid">${o.id}${o.manualOrderNo?` <span style="color:var(--muted); font-size:10.5px;">(رقم مرجعي: ${o.manualOrderNo})</span>`:''} <span style="font-size:10px; color:var(--muted);">(${o.type==='pos'?'كاشير':'أونلاين'})</span></div><div class="odate">${o.customerName} · ${o.customerPhone||'-'} · ${new Date(o.date).toLocaleDateString('ar-EG')}</div>${o.address?`<div class="odate">📍 ${o.address}</div>`:''}</div>
+        <div><div class="oid">${o.id}${o.manualOrderNo?` <span style="color:var(--muted); font-size:10.5px;">(رقم مرجعي: ${o.manualOrderNo})</span>`:''} <span style="font-size:10px; color:var(--muted);">(${o.type==='pos'?'كاشير':'أونلاين'})</span>${o.source==='public_catalog'?` <span class="status-pill ${o._stockConfirmed?'shipped':'prep'}" style="margin-inline-start:4px;">🌐 من الكتالوج العام${o._stockConfirmed?' · تم خصم المخزون':''}</span>`:''}</div><div class="odate">${o.customerName} · ${o.customerPhone||'-'} · ${new Date(o.date).toLocaleDateString('ar-EG')}</div>${o.address?`<div class="odate">📍 ${o.address}</div>`:''}</div>
         <span class="status-pill ${sm.cls}">${o.status}</span>
       </div>
       <div style="font-size:11.5px; color:var(--muted); margin-top:6px;">${o.items.map(i=>i.name+' ×'+i.qty).join('، ')} — ${money(o.total)}${o.isTaxInvoice? ` · <span style="color:var(--accent2);">فاتورة ضريبية #${o.invoiceNo}</span>`:''}</div>
@@ -1730,6 +1736,7 @@ function renderAdminOrders(){
         ${o.waMessage? `<button class="mini-btn" data-view-wa="${o.id}">📄 رسالة الواتس</button>`:''}
         ${o.customerPhone? `<button class="mini-btn" data-resend-prep="${o.id}">📩 إرسال "جاري التجهيز"</button>`:''}
         <button class="mini-btn danger" data-del-order="${o.id}">حذف الطلب</button>
+        ${o.source==='public_catalog' && !o._stockConfirmed? `<button class="mini-btn green" data-confirm-public-stock="${o.id}">✅ تأكيد وخصم المخزون</button>`:''}
       ${o.type==='online' && o.status!=='ملغي'? `<button class="mini-btn ${o.status==='قيد التجهيز'?'green':''}" data-set-status="${o.id}|قيد التجهيز">قيد التجهيز</button>
         <button class="mini-btn ${o.status==='تم الشحن'?'green':''}" data-open-shipping="${o.id}">${o.shipping? '✏️ تعديل بيانات الشحن':'🚚 تم الشحن'}</button>
         <button class="mini-btn ${o.status==='تم التسليم'?'green':''}" data-set-status="${o.id}|تم التسليم">تم التسليم</button>
@@ -1786,6 +1793,19 @@ function saveOrderEdit(oid){
   saveOrderRemote(o);
   saveDB(); toast('تم حفظ التعديل ✓','ok'); closeSheet(); render();
 }
+function confirmPublicOrderStock(oid){
+  const o = DB.orders.find(x=>x.id===oid); if(!o) return;
+  if(o._stockConfirmed){ toast('تم خصم المخزون لهذا الطلب من قبل','err'); return; }
+  let short = false;
+  o.items.forEach(i=>{
+    const avail = getInv(i.productId, i.size, i.color);
+    if(avail < i.qty) short = true;
+    adjInv(i.productId, i.size, i.color, -i.qty);
+  });
+  o._stockConfirmed = true;
+  saveOrderRemote(o); saveDB(); render();
+  toast(short? '⚠️ تم الخصم لكن الكمية كانت غير كافية لبعض الأصناف — راجع المخزون' : 'تم تأكيد الطلب وخصم المخزون ✓', short?'err':'ok');
+}
 function deleteOrder(oid){
   const o = DB.orders.find(x=>x.id===oid); if(!o) return;
   if(!confirm('حذف الطلب سيرجّع كل الأصناف الغير مرتجعة إلى المخزون. هل أنت متأكد؟')) return;
@@ -1796,6 +1816,8 @@ function deleteOrder(oid){
     });
   }
   if(o.shipping && o.shipping._expenseId){ DB.expenses = DB.expenses.filter(e=>e.id!==o.shipping._expenseId); }
+  if(o.shipping && o.shipping._deliveryExpenseId){ DB.expenses = DB.expenses.filter(e=>e.id!==o.shipping._deliveryExpenseId); }
+  if(o.shipping && o.shipping._deliverySupplierTxId){ DB.supplierLedger = DB.supplierLedger.filter(t=>t.id!==o.shipping._deliverySupplierTxId); }
   DB.orders = DB.orders.filter(x=>x.id!==oid);
   DB.returns = DB.returns.filter(r=>r.orderId!==oid);
   deleteOrderRemote(oid);
@@ -1809,6 +1831,20 @@ function setOrderStatus(oid, status){
       if(remaining>0) adjInv(i.productId,i.size,i.color, remaining);
     });
     if(o.shipping && o.shipping._expenseId){ DB.expenses = DB.expenses.filter(e=>e.id!==o.shipping._expenseId); o.shipping._expenseId=null; }
+    if(o.shipping && o.shipping._deliveryExpenseId){ DB.expenses = DB.expenses.filter(e=>e.id!==o.shipping._deliveryExpenseId); o.shipping._deliveryExpenseId=null; }
+    if(o.shipping && o.shipping._deliverySupplierTxId){ DB.supplierLedger = DB.supplierLedger.filter(t=>t.id!==o.shipping._deliverySupplierTxId); o.shipping._deliverySupplierTxId=null; }
+  }
+  // لما الطلب يتسجل "تم التسليم" ومصاريف الشحن كانت على حساب العميل (محصّلة معاه ضمن قيمة الطلب/COD):
+  // المبلغ ده بقى مديونية على المحل لشركة الشحن، فبيتسجل كمصروف تحت بند "التوصيل" وكمان كفاتورة على حساب شركة الشحن في صفحة الموردين
+  if(status==='تم التسليم' && o.status!=='تم التسليم' && o.shipping && o.shipping.paidBy==='العميل' && o.shipping.shippingCost>0 && !o.shipping._deliveryExpenseId){
+    const today = new Date().toISOString().slice(0,10);
+    const expenseId = uid('e_');
+    DB.expenses.push({id:expenseId, type:'التوصيل', note:`مصاريف شحن طلب ${o.id} — ${o.shipping.company} (محصّلة من العميل)`, amount:o.shipping.shippingCost, date:today});
+    const supplierId = findOrCreateSupplierByName(o.shipping.company);
+    const supplierTxId = uid('slt_');
+    DB.supplierLedger.push({id:supplierTxId, supplierId, type:'invoice', amount:o.shipping.shippingCost, note:`مصاريف شحن طلب ${o.id} (محصّلة من العميل)`, date:new Date().toISOString()});
+    o.shipping._deliveryExpenseId = expenseId;
+    o.shipping._deliverySupplierTxId = supplierTxId;
   }
   o.status = status;
   saveOrderRemote(o);
@@ -1955,6 +1991,327 @@ function deleteCustomer(cid){
   saveDB(); render(); toast('تم حذف العميل','ok');
 }
 
+/* ================= SUPPLIERS & DISTRIBUTORS (الموردين والموزعين) ================= */
+function supplierBalance(sid){
+  return DB.supplierLedger.filter(t=>t.supplierId===sid).reduce((s,t)=> s + (t.type==='invoice'? t.amount : -t.amount), 0);
+}
+function findOrCreateSupplierByName(name){
+  let s = DB.suppliers.find(x=> x.name === name);
+  if(!s){ s = {id:uid('sup_'), name, phone:'', notes:'شركة شحن (مضافة تلقائياً من الطلبات)'}; DB.suppliers.push(s); }
+  return s.id;
+}
+function distributorBalance(did){
+  return DB.distributorLedger.filter(t=>t.distributorId===did).reduce((s,t)=> s + (t.type==='delivery'? t.amount : -t.amount), 0);
+}
+function daysUntil(dateStr){
+  if(!dateStr) return null;
+  const d = new Date(dateStr); d.setHours(0,0,0,0);
+  const today = new Date(); today.setHours(0,0,0,0);
+  return Math.round((d-today)/(1000*60*60*24));
+}
+function dueBadge(dateStr, paid){
+  if(paid) return `<span class="status-pill shipped">تم الدفع</span>`;
+  const dl = daysUntil(dateStr);
+  if(dl===null) return '';
+  if(dl<0) return `<span class="status-pill cancelled">متأخر ${Math.abs(dl)} يوم</span>`;
+  if(dl<=3) return `<span class="status-pill prep">مستحق خلال ${dl} يوم</span>`;
+  return `<span class="status-pill shipped">مستحق ${new Date(dateStr).toLocaleDateString('ar-EG')}</span>`;
+}
+
+window._supDist = window._supDist || {tab:'suppliers'};
+
+function renderAdminSuppliers(){
+  const tab = window._supDist.tab;
+  const totalSuppliersDebt = DB.suppliers.reduce((s,x)=> s + Math.max(0,supplierBalance(x.id)), 0);
+  const totalDistributorsDue = DB.distributors.reduce((s,x)=> s + Math.max(0,distributorBalance(x.id)), 0);
+  const pendingInstallments = DB.supplierInstallments.filter(i=>!i.paid);
+  const overdueCount = pendingInstallments.filter(i=> daysUntil(i.dueDate) < 0).length;
+
+  return `${adminTabsHTML('admin-suppliers')}
+  <div class="section-title">الموردين والموزعين</div>
+  <div class="kpi-grid">
+    <div class="kpi danger"><div class="l">مستحق للموردين</div><div class="v">${money(totalSuppliersDebt)}</div></div>
+    <div class="kpi green"><div class="l">مستحق من الموزعين</div><div class="v">${money(totalDistributorsDue)}</div></div>
+    <div class="kpi accent"><div class="l">أقساط لسه مدفوعتش</div><div class="v">${pendingInstallments.length}</div></div>
+    <div class="kpi danger"><div class="l">أقساط متأخرة</div><div class="v">${overdueCount}</div></div>
+  </div>
+
+  <div style="display:flex; gap:8px; margin-top:16px;">
+    <button class="chip ${tab==='suppliers'?'active':''}" data-supdist-tab="suppliers">🏭 الموردين</button>
+    <button class="chip ${tab==='distributors'?'active':''}" data-supdist-tab="distributors">🚚 الموزعين</button>
+    <button class="chip ${tab==='installments'?'active':''}" data-supdist-tab="installments">📆 الأقساط</button>
+  </div>
+
+  ${tab==='suppliers'? renderSuppliersTab() : tab==='distributors'? renderDistributorsTab() : renderInstallmentsTab()}
+  `;
+}
+
+/* ----- الموردين ----- */
+function renderSuppliersTab(){
+  const list = [...DB.suppliers].sort((a,b)=> supplierBalance(b.id)-supplierBalance(a.id));
+  return `
+  <button class="big-btn sm" id="btnNewSupplier">+ إضافة مورد جديد</button>
+  ${list.length===0? `<div class="empty-state"><div class="ic">🏭</div>لا يوجد موردين بعد</div>` :
+  list.map(s=>{
+    const bal = supplierBalance(s.id);
+    return `<div class="list-row">
+      <div style="cursor:pointer;" data-open-supplier="${s.id}"><div class="main">${s.name}</div><div class="sub">${s.phone||''}${s.notes? ' · '+s.notes : ''}</div></div>
+      <div style="text-align:left;">
+        <div style="font-family:Cairo;font-weight:800;font-size:13px;color:${bal>0?'var(--danger)':'var(--accent2)'};">${bal>0? 'مستحق عليك '+money(bal) : (bal<0? 'رصيدك عنده '+money(-bal) : 'متوازن')}</div>
+        <div style="display:flex; gap:6px; margin-top:6px;">
+          <button class="mini-btn" data-open-supplier="${s.id}">كشف حساب</button>
+          <button class="mini-btn danger" data-del-supplier="${s.id}">حذف</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('')}
+  `;
+}
+function supplierFormHTML(s){
+  const isEdit = !!s;
+  s = s || {id:'', name:'', phone:'', notes:''};
+  return `
+  <h3 style="font-family:Cairo;">${isEdit?'تعديل مورد':'مورد جديد'}</h3>
+  <label class="fl">اسم المورد</label><input class="field" id="sf_name" value="${s.name}">
+  <label class="fl">رقم الموبايل</label><input class="field" id="sf_phone" value="${s.phone||''}">
+  <label class="fl">ملاحظات</label><input class="field" id="sf_notes" value="${s.notes||''}">
+  <button class="big-btn" id="btnSaveSupplier" data-sid="${s.id}">💾 حفظ المورد</button>
+  `;
+}
+function openSupplierForm(sid){ const s = sid? DB.suppliers.find(x=>x.id===sid) : null; openSheet(supplierFormHTML(s)); }
+function saveSupplier(sid){
+  const name = document.getElementById('sf_name').value.trim();
+  const phone = document.getElementById('sf_phone').value.trim();
+  const notes = document.getElementById('sf_notes').value.trim();
+  if(!name){ toast('اكتب اسم المورد','err'); return; }
+  if(sid){ Object.assign(DB.suppliers.find(x=>x.id===sid), {name, phone, notes}); }
+  else { DB.suppliers.push({id:uid('sup_'), name, phone, notes}); }
+  saveDB(); toast('تم الحفظ ✓','ok'); closeSheet(); render();
+}
+function deleteSupplier(sid){
+  if(!confirm('حذف المورد وكل سجل حسابه معه نهائياً؟')) return;
+  DB.suppliers = DB.suppliers.filter(x=>x.id!==sid);
+  DB.supplierLedger = DB.supplierLedger.filter(x=>x.supplierId!==sid);
+  DB.supplierInstallments = DB.supplierInstallments.filter(x=>x.supplierId!==sid);
+  saveDB(); render(); toast('تم حذف المورد','ok');
+}
+function supplierLedgerHTML(sid){
+  const s = DB.suppliers.find(x=>x.id===sid); if(!s) return '';
+  const tx = [...DB.supplierLedger.filter(t=>t.supplierId===sid)].sort((a,b)=> new Date(b.date)-new Date(a.date));
+  const inst = [...DB.supplierInstallments.filter(i=>i.supplierId===sid)].sort((a,b)=> new Date(a.dueDate)-new Date(b.dueDate));
+  const bal = supplierBalance(sid);
+  return `
+  <h3 style="font-family:Cairo;">${s.name}</h3>
+  <div class="sub" style="margin-bottom:6px;">${s.phone||''}</div>
+  <div class="kpi ${bal>0?'danger':'green'}" style="margin-top:6px;"><div class="l">الرصيد الحالي</div><div class="v">${bal>0? money(bal)+' مستحق عليك' : (bal<0? money(-bal)+' رصيدك عنده' : money(0))}</div></div>
+
+  <div class="two-col" style="margin-top:14px;">
+    <div><label class="fl">نوع الحركة</label>
+      <select class="field" id="slType">
+        <option value="invoice">فاتورة شراء (يزيد المستحق)</option>
+        <option value="payment">دفعة (تقلل المستحق)</option>
+      </select>
+    </div>
+    <div><label class="fl">المبلغ</label><input class="field" type="number" id="slAmount"></div>
+  </div>
+  <label class="fl">ملاحظة (اختياري)</label><input class="field" id="slNote" placeholder="رقم فاتورة، تفاصيل...">
+  <button class="big-btn sm" id="btnAddSupplierTx" data-sid="${sid}">+ إضافة حركة</button>
+
+  <div class="section-title">سجل الحركات</div>
+  ${tx.length===0? `<div style="color:var(--muted); font-size:12.5px;">لا توجد حركات مسجلة</div>` :
+  tx.map(t=>`<div class="list-row">
+    <div><div class="main">${t.type==='invoice'?'فاتورة شراء':'دفعة'}</div><div class="sub">${t.note||''} · ${new Date(t.date).toLocaleDateString('ar-EG')}</div></div>
+    <div style="display:flex;align-items:center;gap:8px;">
+      <span style="font-family:Cairo;font-weight:800;color:${t.type==='invoice'?'var(--danger)':'var(--accent2)'};">${t.type==='invoice'?'+':'-'}${money(t.amount)}</span>
+      <button class="mini-btn danger" data-del-supplier-tx="${t.id}">حذف</button>
+    </div>
+  </div>`).join('')}
+
+  <div class="section-title">أقساط هذا المورد</div>
+  <div class="two-col">
+    <div><label class="fl">مبلغ القسط</label><input class="field" type="number" id="siAmount"></div>
+    <div><label class="fl">تاريخ الاستحقاق</label><input class="field" type="date" id="siDueDate"></div>
+  </div>
+  <label class="fl">ملاحظة (اختياري)</label><input class="field" id="siNote">
+  <button class="big-btn sm" id="btnAddInstallment" data-sid="${sid}">+ إضافة قسط</button>
+  ${inst.length===0? `<div style="color:var(--muted); font-size:12.5px; margin-top:8px;">لا توجد أقساط مسجلة</div>` :
+  inst.map(i=>`<div class="list-row">
+    <div><div class="main">${money(i.amount)}</div><div class="sub">${i.note||''} · استحقاق ${new Date(i.dueDate).toLocaleDateString('ar-EG')}</div></div>
+    <div style="display:flex;align-items:center;gap:8px;">
+      ${dueBadge(i.dueDate, i.paid)}
+      ${!i.paid? `<button class="mini-btn green" data-pay-installment="${i.id}">تم الدفع</button>`:''}
+      <button class="mini-btn danger" data-del-installment="${i.id}">حذف</button>
+    </div>
+  </div>`).join('')}
+  `;
+}
+function openSupplierLedger(sid){ openSheet(supplierLedgerHTML(sid)); }
+function addSupplierTx(sid){
+  const type = document.getElementById('slType').value;
+  const amount = Number(document.getElementById('slAmount').value);
+  const note = document.getElementById('slNote').value.trim();
+  if(!amount || amount<=0){ toast('أدخل مبلغ صحيح','err'); return; }
+  DB.supplierLedger.push({id:uid('slt_'), supplierId:sid, type, amount, note, date:new Date().toISOString()});
+  saveDB(); toast('تمت إضافة الحركة ✓','ok'); openSheet(supplierLedgerHTML(sid));
+}
+function deleteSupplierTx(tid){
+  if(!confirm('حذف هذه الحركة؟')) return;
+  const t = DB.supplierLedger.find(x=>x.id===tid); if(!t) return;
+  const sid = t.supplierId;
+  DB.supplierLedger = DB.supplierLedger.filter(x=>x.id!==tid);
+  saveDB(); toast('تم الحذف','ok'); openSheet(supplierLedgerHTML(sid));
+}
+function addInstallment(sid){
+  const amount = Number(document.getElementById('siAmount').value);
+  const dueDate = document.getElementById('siDueDate').value;
+  const note = document.getElementById('siNote').value.trim();
+  if(!amount || amount<=0){ toast('أدخل مبلغ صحيح','err'); return; }
+  if(!dueDate){ toast('اختر تاريخ الاستحقاق','err'); return; }
+  DB.supplierInstallments.push({id:uid('sin_'), supplierId:sid, amount, dueDate, note, paid:false});
+  saveDB(); toast('تمت إضافة القسط ✓','ok'); openSheet(supplierLedgerHTML(sid));
+}
+function payInstallment(iid){
+  const inst = DB.supplierInstallments.find(x=>x.id===iid); if(!inst) return;
+  inst.paid = true; inst.paidDate = new Date().toISOString();
+  DB.supplierLedger.push({id:uid('slt_'), supplierId:inst.supplierId, type:'payment', amount:inst.amount, note:'سداد قسط', date:new Date().toISOString()});
+  saveDB(); toast('تم تسجيل الدفع ✓','ok');
+  if(document.getElementById('sheetContent')) openSheet(supplierLedgerHTML(inst.supplierId)); else render();
+}
+function deleteInstallment(iid){
+  if(!confirm('حذف هذا القسط؟')) return;
+  const inst = DB.supplierInstallments.find(x=>x.id===iid); if(!inst) return;
+  const sid = inst.supplierId;
+  DB.supplierInstallments = DB.supplierInstallments.filter(x=>x.id!==iid);
+  saveDB(); toast('تم الحذف','ok');
+  if(document.getElementById('sheetContent')) openSheet(supplierLedgerHTML(sid)); else render();
+}
+
+/* ----- الأقساط (نظرة شاملة على كل الموردين) ----- */
+function renderInstallmentsTab(){
+  const rows = [...DB.supplierInstallments].sort((a,b)=> new Date(a.dueDate)-new Date(b.dueDate));
+  return `
+  <div class="section-title" style="margin-top:16px;">كل الأقساط المستحقة</div>
+  ${rows.length===0? `<div class="empty-state"><div class="ic">📆</div>لا توجد أقساط مسجلة بعد<br><span style="font-size:11.5px;">تقدر تضيف أقساط من صفحة كل مورد</span></div>` :
+  rows.map(i=>{
+    const s = DB.suppliers.find(x=>x.id===i.supplierId);
+    return `<div class="list-row">
+      <div style="cursor:pointer;" data-open-supplier="${i.supplierId}"><div class="main">${s? s.name : 'مورد محذوف'}</div><div class="sub">${i.note||''} · استحقاق ${new Date(i.dueDate).toLocaleDateString('ar-EG')}</div></div>
+      <div style="text-align:left;">
+        <div style="font-family:Cairo;font-weight:800;font-size:13px;">${money(i.amount)}</div>
+        <div style="display:flex; gap:6px; margin-top:6px;">
+          ${dueBadge(i.dueDate, i.paid)}
+          ${!i.paid? `<button class="mini-btn green" data-pay-installment="${i.id}">تم الدفع</button>`:''}
+        </div>
+      </div>
+    </div>`;
+  }).join('')}
+  `;
+}
+
+/* ----- الموزعين ----- */
+function renderDistributorsTab(){
+  const list = [...DB.distributors].sort((a,b)=> distributorBalance(b.id)-distributorBalance(a.id));
+  return `
+  <button class="big-btn sm" id="btnNewDistributor">+ إضافة موزع جديد</button>
+  ${list.length===0? `<div class="empty-state"><div class="ic">🚚</div>لا يوجد موزعين بعد</div>` :
+  list.map(d=>{
+    const bal = distributorBalance(d.id);
+    return `<div class="list-row">
+      <div style="cursor:pointer;" data-open-distributor="${d.id}">
+        <div class="main">${d.name}</div>
+        <div class="sub">${d.phone||''}${d.notes? ' · '+d.notes : ''}</div>
+        ${d.nextDueDate? `<div style="margin-top:4px;">${dueBadge(d.nextDueDate, false)}</div>` : ''}
+      </div>
+      <div style="text-align:left;">
+        <div style="font-family:Cairo;font-weight:800;font-size:13px;color:${bal>0?'var(--danger)':'var(--accent2)'};">${bal>0? 'مستحق منه '+money(bal) : (bal<0? 'له رصيد '+money(-bal) : 'متوازن')}</div>
+        <div style="display:flex; gap:6px; margin-top:6px;">
+          <button class="mini-btn" data-open-distributor="${d.id}">كشف حساب</button>
+          <button class="mini-btn danger" data-del-distributor="${d.id}">حذف</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('')}
+  `;
+}
+function distributorFormHTML(d){
+  const isEdit = !!d;
+  d = d || {id:'', name:'', phone:'', notes:'', nextDueDate:''};
+  return `
+  <h3 style="font-family:Cairo;">${isEdit?'تعديل موزع':'موزع جديد'}</h3>
+  <label class="fl">اسم الموزع</label><input class="field" id="df_name" value="${d.name}">
+  <label class="fl">رقم الموبايل</label><input class="field" id="df_phone" value="${d.phone||''}">
+  <label class="fl">تاريخ الأجل القادم (اختياري)</label><input class="field" type="date" id="df_nextDue" value="${d.nextDueDate||''}">
+  <label class="fl">ملاحظات</label><input class="field" id="df_notes" value="${d.notes||''}">
+  <button class="big-btn" id="btnSaveDistributor" data-did="${d.id}">💾 حفظ الموزع</button>
+  `;
+}
+function openDistributorForm(did){ const d = did? DB.distributors.find(x=>x.id===did) : null; openSheet(distributorFormHTML(d)); }
+function saveDistributor(did){
+  const name = document.getElementById('df_name').value.trim();
+  const phone = document.getElementById('df_phone').value.trim();
+  const nextDueDate = document.getElementById('df_nextDue').value;
+  const notes = document.getElementById('df_notes').value.trim();
+  if(!name){ toast('اكتب اسم الموزع','err'); return; }
+  if(did){ Object.assign(DB.distributors.find(x=>x.id===did), {name, phone, nextDueDate, notes}); }
+  else { DB.distributors.push({id:uid('dis_'), name, phone, nextDueDate, notes}); }
+  saveDB(); toast('تم الحفظ ✓','ok'); closeSheet(); render();
+}
+function deleteDistributor(did){
+  if(!confirm('حذف الموزع وكل سجل حسابه معه نهائياً؟')) return;
+  DB.distributors = DB.distributors.filter(x=>x.id!==did);
+  DB.distributorLedger = DB.distributorLedger.filter(x=>x.distributorId!==did);
+  saveDB(); render(); toast('تم حذف الموزع','ok');
+}
+function distributorLedgerHTML(did){
+  const d = DB.distributors.find(x=>x.id===did); if(!d) return '';
+  const tx = [...DB.distributorLedger.filter(t=>t.distributorId===did)].sort((a,b)=> new Date(b.date)-new Date(a.date));
+  const bal = distributorBalance(did);
+  return `
+  <h3 style="font-family:Cairo;">${d.name}</h3>
+  <div class="sub" style="margin-bottom:6px;">${d.phone||''}</div>
+  ${d.nextDueDate? `<div style="margin:6px 0;">الأجل القادم: ${dueBadge(d.nextDueDate,false)}</div>` : ''}
+  <div class="kpi ${bal>0?'danger':'green'}" style="margin-top:6px;"><div class="l">الرصيد الحالي</div><div class="v">${bal>0? money(bal)+' مستحق منه' : (bal<0? money(-bal)+' له رصيد عندك' : money(0))}</div></div>
+
+  <div class="two-col" style="margin-top:14px;">
+    <div><label class="fl">نوع الحركة</label>
+      <select class="field" id="dlType">
+        <option value="delivery">تسليم بضاعة بالأجل (يزيد المستحق منه)</option>
+        <option value="collection">تحصيل (يقلل المستحق منه)</option>
+      </select>
+    </div>
+    <div><label class="fl">المبلغ</label><input class="field" type="number" id="dlAmount"></div>
+  </div>
+  <label class="fl">ملاحظة (اختياري)</label><input class="field" id="dlNote" placeholder="تفاصيل الشحنة أو التحصيل...">
+  <button class="big-btn sm" id="btnAddDistributorTx" data-did="${did}">+ إضافة حركة</button>
+
+  <div class="section-title">سجل الحركات</div>
+  ${tx.length===0? `<div style="color:var(--muted); font-size:12.5px;">لا توجد حركات مسجلة</div>` :
+  tx.map(t=>`<div class="list-row">
+    <div><div class="main">${t.type==='delivery'?'تسليم بضاعة':'تحصيل'}</div><div class="sub">${t.note||''} · ${new Date(t.date).toLocaleDateString('ar-EG')}</div></div>
+    <div style="display:flex;align-items:center;gap:8px;">
+      <span style="font-family:Cairo;font-weight:800;color:${t.type==='delivery'?'var(--danger)':'var(--accent2)'};">${t.type==='delivery'?'+':'-'}${money(t.amount)}</span>
+      <button class="mini-btn danger" data-del-distributor-tx="${t.id}">حذف</button>
+    </div>
+  </div>`).join('')}
+  `;
+}
+function openDistributorLedger(did){ openSheet(distributorLedgerHTML(did)); }
+function addDistributorTx(did){
+  const type = document.getElementById('dlType').value;
+  const amount = Number(document.getElementById('dlAmount').value);
+  const note = document.getElementById('dlNote').value.trim();
+  if(!amount || amount<=0){ toast('أدخل مبلغ صحيح','err'); return; }
+  DB.distributorLedger.push({id:uid('dlt_'), distributorId:did, type, amount, note, date:new Date().toISOString()});
+  saveDB(); toast('تمت إضافة الحركة ✓','ok'); openSheet(distributorLedgerHTML(did));
+}
+function deleteDistributorTx(tid){
+  if(!confirm('حذف هذه الحركة؟')) return;
+  const t = DB.distributorLedger.find(x=>x.id===tid); if(!t) return;
+  const did = t.distributorId;
+  DB.distributorLedger = DB.distributorLedger.filter(x=>x.id!==tid);
+  saveDB(); toast('تم الحذف','ok'); openSheet(distributorLedgerHTML(did));
+}
+
 /* ================= ADMIN EXPENSES ================= */
 function renderAdminExpenses(){
   const month = computeFinance(d=> d.slice(0,7)===monthStr());
@@ -1971,7 +2328,7 @@ function renderAdminExpenses(){
   <div class="two-col">
     <div><label class="fl">النوع</label>
       <select class="field" id="exType">
-        ${['إيجار','شراء بضاعة','مرتبات','فواتير','شحن','صيانة','أخرى'].map(t=>`<option>${t}</option>`).join('')}
+        ${['إيجار','شراء بضاعة','مرتبات','فواتير','شحن','التوصيل','صيانة','أخرى'].map(t=>`<option>${t}</option>`).join('')}
       </select>
     </div>
     <div><label class="fl">المبلغ</label><input class="field" type="number" id="exAmount"></div>
@@ -1988,7 +2345,7 @@ function expenseFormHTML(e){
   <h3 style="font-family:Cairo;">تعديل مصروف</h3>
   <label class="fl">النوع</label>
   <select class="field" id="exf_type">
-    ${['إيجار','شراء بضاعة','مرتبات','فواتير','شحن','صيانة','أخرى'].map(t=>`<option ${e.type===t?'selected':''}>${t}</option>`).join('')}
+    ${['إيجار','شراء بضاعة','مرتبات','فواتير','شحن','التوصيل','صيانة','أخرى'].map(t=>`<option ${e.type===t?'selected':''}>${t}</option>`).join('')}
   </select>
   <label class="fl">المبلغ</label><input class="field" type="number" id="exf_amount" value="${e.amount}">
   <label class="fl">ملاحظة</label><input class="field" id="exf_note" value="${e.note||''}">
@@ -2134,6 +2491,24 @@ function renderAdminSettings(){
   <input class="field" id="stInvoiceSeq" type="number" value="${s.invoiceSeq}" min="1">
   <button class="big-btn green" id="btnSaveSettings">💾 حفظ الإعدادات</button>
 
+  <div class="section-title" style="margin-top:24px;">🌐 كتالوج المنتجات العام</div>
+  <div style="background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px; font-size:12.5px; line-height:1.9;">
+    <div>صفحة مستقلة تعرض منتجاتك للعملاء وتسمحلهم يطلبوا مباشرة (تسجيل الطلب في النظام + واتساب) من غير ما يحتاجوا يدخلوا على التطبيق نفسه.</div>
+    <div style="color:var(--muted); margin-top:6px;">دوس تنزيل، وارفع الملف الناتج على أي استضافة (GitHub Pages مثلاً) وابعت رابطه لعملائك. لازم تعيد التصدير والرفع كل ما تحدّث منتجاتك أو أسعارك.</div>
+    <button class="big-btn sm" id="btnDownloadCatalog">📥 تنزيل صفحة الكتالوج</button>
+    <div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--line);">
+      <div style="font-weight:700; margin-bottom:4px;">⚠️ خطوة تقنية مطلوبة مرة واحدة (Firestore Rules)</div>
+      <div style="color:var(--muted);">عشان طلبات الكتالوج تتسجل تلقائيًا في النظام، لازم تضيف القاعدة دي في Firebase Console ← Firestore Database ← Rules (جوه الـ match الخاص بمستند المحل):</div>
+      <pre style="background:var(--ink); border:1px solid var(--line); border-radius:8px; padding:10px; font-size:10.5px; overflow-x:auto; margin-top:6px; direction:ltr; text-align:left;">match /orders/{orderId} {
+  allow read, update, delete: if request.auth != null && request.auth.uid == shopId;
+  allow create: if request.resource.data.source == 'public_catalog'
+    && request.resource.data.status == 'قيد التجهيز'
+    && request.resource.data.total is number && request.resource.data.total > 0;
+}</pre>
+      <div style="color:var(--muted); margin-top:6px;">من غيرها، الطلب هيتبعت واتساب برضه (كخط رجعة) بس مش هيظهر أوتوماتيك في قسم "الطلبات".</div>
+    </div>
+  </div>
+
   <div class="section-title" style="margin-top:24px; color:var(--danger);">⚠️ منطقة خطر</div>
   <div style="background:#fdecea; border:1px solid var(--danger); border-radius:12px; padding:12px; font-size:12.5px;">
     <div style="font-weight:700; margin-bottom:6px;">مسح كل بيانات المحل نهائيًا</div>
@@ -2219,6 +2594,483 @@ function exportExcel(){
   XLSX.writeFile(wb, 'kotshiyat-data.xlsx');
   toast('تم تصدير الملف ✓','ok');
 }
+/* ================= كتالوج المنتجات العام (صفحة مستقلة للعملاء) =================
+   يتم تصديرها كملف HTML ثابت مستقل من صفحة الإعدادات، وترفع يدويًا (مثلاً على GitHub Pages
+   أو أي استضافة) عشان العملاء يتصفحوا المنتجات ويطلبوا مباشرة بدون تسجيل دخول.
+   الطلب بيتسجل تلقائيًا في نظام الطلبات (لو Firestore Rules مظبوطة للسماح بالكتابة العامة
+   على shops/{shopId}/orders فقط)، وكمان بيتفتح واتساب دايمًا كخط رجعة حتى لو الكتابة فشلت.
+================================================================= */
+const CATALOG_TEMPLATE = `
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+<title>__SHOPNAME__</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@700;800;900&family=Tajawal:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://www.gstatic.com/firebasejs/12.17.1/firebase-app-compat.js"><\/script>
+<script src="https://www.gstatic.com/firebasejs/12.17.1/firebase-firestore-compat.js"><\/script>
+<style>
+:root{
+  --ink:#15131A; --panel:#211E29; --accent:#FF5A1F; --accent2:#2FA766; --danger:#E14B4B;
+  --muted:#9A97A3; --line:#3A3742; --text:#F3EFE6;
+}
+*{box-sizing:border-box;}
+body{margin:0; background:var(--ink); color:var(--text); font-family:'Tajawal',sans-serif; padding-bottom:30px;}
+.app-header{position:sticky; top:0; z-index:40; background:var(--ink); padding:14px 16px 10px; border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between;}
+.brand{display:flex; align-items:center; gap:10px;}
+.brand .logo{width:38px;height:38px;border-radius:10px;background:linear-gradient(145deg,var(--accent),#c93f0f); display:flex;align-items:center;justify-content:center;font-size:18px;}
+.brand .name{font-family:'Cairo'; font-weight:900; font-size:16px;}
+.brand .sub{font-size:10.5px; color:var(--muted);}
+.cart-btn{position:relative; background:var(--panel); border:1px solid var(--line); color:var(--text); width:42px;height:42px;border-radius:12px; font-size:19px;}
+.cart-badge{position:absolute; top:-5px; left:-5px; background:var(--danger); color:#fff; font-size:10px; font-weight:800; min-width:17px; height:17px; border-radius:9px; display:flex;align-items:center;justify-content:center;}
+.search-wrap{padding:12px 16px 4px;}
+.search-input{width:100%; background:var(--panel); border:1px solid var(--line); color:var(--text); padding:11px 14px; border-radius:12px; font-size:14px;}
+.grid{display:grid; grid-template-columns:1fr 1fr; gap:12px; padding:12px 16px;}
+.pcard{background:var(--panel); border:1px solid var(--line); border-radius:16px; overflow:hidden; cursor:pointer;}
+.pcard img{width:100%; aspect-ratio:1; object-fit:cover; display:block; background:#000;}
+.pcard .body{padding:9px 10px 11px;}
+.pcard .name{font-size:12.5px; font-weight:700; line-height:1.4;}
+.pcard .brand{font-size:10.5px; color:var(--muted); margin-top:2px;}
+.pcard .price{font-family:'Cairo'; font-weight:900; font-size:14px; color:var(--accent); margin-top:6px;}
+.pcard .oos{font-size:10px; color:var(--danger); font-weight:700; margin-top:4px;}
+.empty-state{text-align:center; padding:60px 20px; color:var(--muted);}
+.empty-state .ic{font-size:36px; margin-bottom:10px;}
+
+.overlay{position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:80; display:none; align-items:flex-end; justify-content:center;}
+.overlay.open{display:flex;}
+.sheet{background:var(--ink); width:100%; max-width:520px; max-height:88vh; overflow-y:auto; border-radius:22px 22px 0 0; padding:18px 18px 26px; position:relative;}
+.sheet-handle{width:38px;height:4px;background:var(--line); border-radius:3px; margin:0 auto 14px;}
+.sheet-close{position:absolute; left:16px; top:14px; background:var(--panel); border:1px solid var(--line); width:32px;height:32px;border-radius:10px; color:var(--text); font-size:15px;}
+h3{font-family:'Cairo'; margin:0 0 4px;}
+.fl{font-size:12px; color:var(--muted); font-weight:700; margin-top:14px; display:block;}
+.field{width:100%; background:var(--panel); border:1px solid var(--line); color:var(--text); padding:12px; border-radius:12px; margin-top:8px; font-size:14px;}
+.pd-img{width:100%; aspect-ratio:1; object-fit:cover; border-radius:14px; background:#000;}
+.pd-price{font-family:'Cairo'; font-weight:900; font-size:21px; color:var(--accent); margin-top:10px;}
+.opt-row{display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;}
+.opt-pill{background:var(--panel); border:1px solid var(--line); color:var(--text); padding:8px 14px; border-radius:10px; font-size:13px; font-weight:700;}
+.opt-pill.sel{background:var(--accent); border-color:var(--accent);}
+.opt-pill.disabled{opacity:.3; text-decoration:line-through;}
+.qty-stepper{display:flex; align-items:center; gap:14px; margin-top:12px;}
+.qty-stepper button{width:36px;height:36px;border-radius:10px;background:var(--panel);border:1px solid var(--line);color:var(--text);font-size:17px;}
+.big-btn{width:100%; background:var(--accent); color:#fff; border:none; padding:14px; border-radius:14px; font-family:'Cairo'; font-weight:800; font-size:15.5px; margin-top:16px;}
+.big-btn.green{background:var(--accent2);}
+.big-btn:disabled{opacity:.4;}
+.cart-item{display:flex; gap:10px; background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:10px; margin-bottom:10px;}
+.cart-item img{width:56px;height:56px;border-radius:10px;object-fit:cover;background:#000;}
+.cart-item .info{flex:1;}
+.cart-item .n{font-size:13px; font-weight:700;}
+.cart-item .m{font-size:11px; color:var(--muted); margin-top:2px;}
+.cart-item .ctrl{display:flex; align-items:center; gap:8px; margin-top:6px;}
+.cart-item .ctrl button{width:24px;height:24px;border-radius:6px; background:var(--ink); border:1px solid var(--line); color:var(--text);}
+.cart-item .price-col{text-align:left;}
+.cart-item .del{color:var(--danger); font-size:11px; background:none; border:none; margin-top:4px;}
+.summary-row{display:flex; justify-content:space-between; font-size:14px; padding:6px 0; color:var(--muted);}
+.summary-row.total{color:var(--text); font-family:'Cairo'; font-weight:800; font-size:17px; border-top:1px solid var(--line); margin-top:6px; padding-top:12px;}
+.toast{position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:var(--panel); border:1px solid var(--line); color:var(--text); padding:11px 20px; border-radius:12px; font-size:13.5px; opacity:0; transition:.25s opacity; pointer-events:none; z-index:99;}
+.toast.show{opacity:1;}
+.toast.err{border-color:var(--danger); color:#ffb4b4;}
+.success-box{text-align:center; padding:20px 6px;}
+.success-box .ic{font-size:46px;}
+.stale-note{font-size:10.5px; color:var(--muted); text-align:center; padding:6px 16px 0;}
+</style>
+</head>
+<body>
+
+<div class="app-header">
+  <div class="brand">
+    <div class="logo" id="brandLogo">__LOGO__</div>
+    <div>
+      <div class="name" id="brandName">__SHOPNAME__</div>
+      <div class="sub">تصفح واطلب مباشرة</div>
+    </div>
+  </div>
+  <button class="cart-btn" id="btnCart">🛒<span class="cart-badge" id="cartBadge" style="display:none;">0</span></button>
+</div>
+
+<div class="stale-note">الأسعار والكميات المعروضة كما كانت وقت آخر تحديث للكتالوج، وقد تتغير.</div>
+
+<div class="search-wrap">
+  <input class="search-input" id="searchInput" placeholder="ابحث عن منتج...">
+</div>
+
+<div class="grid" id="productGrid"></div>
+
+<div class="overlay" id="overlay">
+  <div class="sheet" id="sheet"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+var DATA = /*__CATALOG_DATA__*/;
+var CART = [];
+var STATE = { pid:null, color:null, size:null, qty:1, imgIdx:0 };
+
+function esc(s){
+  return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function money(n){ return (Math.round(n*100)/100).toLocaleString('ar-EG') + ' ج.م'; }
+function toast(msg, kind){
+  var t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show' + (kind? (' '+kind) : '');
+  clearTimeout(window._toastTimer);
+  window._toastTimer = setTimeout(function(){ t.className = 'toast'; }, 2400);
+}
+function openOverlay(html){
+  document.getElementById('sheet').innerHTML = '<button class="sheet-close" id="btnSheetClose">✕</button><div class="sheet-handle"></div>' + html;
+  document.getElementById('overlay').classList.add('open');
+  document.getElementById('btnSheetClose').addEventListener('click', closeOverlay);
+}
+function closeOverlay(){ document.getElementById('overlay').classList.remove('open'); }
+document.getElementById('overlay').addEventListener('click', function(e){ if(e.target.id==='overlay') closeOverlay(); });
+
+function productStock(p, size, color){
+  var key = size + '|' + color;
+  return p.stock && p.stock[key] ? p.stock[key] : 0;
+}
+function productTotalStock(p){
+  var total = 0;
+  if(p.stock){ for(var k in p.stock){ total += p.stock[k]; } }
+  return total;
+}
+function productColorsInStock(p){
+  var set = {};
+  p.colors.forEach(function(c){
+    p.sizes.forEach(function(s){ if(productStock(p,s,c) > 0) set[c] = true; });
+  });
+  return Object.keys(set);
+}
+function productSizesInStockForColor(p, color){
+  return p.sizes.filter(function(s){ return productStock(p, s, color) > 0; });
+}
+
+function renderProducts(){
+  var q = (document.getElementById('searchInput').value || '').trim().toLowerCase();
+  var grid = document.getElementById('productGrid');
+  var list = DATA.products.filter(function(p){
+    if(!q) return true;
+    return (p.name||'').toLowerCase().indexOf(q) > -1 || (p.brand||'').toLowerCase().indexOf(q) > -1;
+  });
+  if(list.length === 0){
+    grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1;"><div class="ic">🔎</div>لا توجد نتائج</div>';
+    return;
+  }
+  var html = '';
+  list.forEach(function(p){
+    var stock = productTotalStock(p);
+    var img = (p.images && p.images[0]) || '';
+    html += '<div class="pcard" data-pid="' + esc(p.id) + '">' +
+      '<img src="' + esc(img) + '" loading="lazy">' +
+      '<div class="body">' +
+        '<div class="name">' + esc(p.name) + '</div>' +
+        '<div class="brand">' + esc(p.brand||'') + '</div>' +
+        '<div class="price">' + money(p.price) + '</div>' +
+        (stock<=0 ? '<div class="oos">غير متوفر حالياً</div>' : '') +
+      '</div>' +
+    '</div>';
+  });
+  grid.innerHTML = html;
+  var cards = grid.querySelectorAll('[data-pid]');
+  for(var i=0;i<cards.length;i++){
+    cards[i].addEventListener('click', (function(pid){ return function(){ openProduct(pid); }; })(cards[i].getAttribute('data-pid')));
+  }
+}
+
+function openProduct(pid){
+  var p = DATA.products.filter(function(x){ return x.id===pid; })[0];
+  if(!p) return;
+  var colors = productColorsInStock(p);
+  STATE = { pid:pid, color: colors[0] || (p.colors[0]||''), size:null, qty:1, imgIdx:0 };
+  if(STATE.color){
+    var sizes = productSizesInStockForColor(p, STATE.color);
+    STATE.size = sizes[0] || null;
+  }
+  openOverlay(productSheetHTML(p));
+  bindProductSheet(p);
+}
+
+function productSheetHTML(p){
+  var img = (p.images && p.images[STATE.imgIdx]) || (p.images && p.images[0]) || '';
+  var colors = productColorsInStock(p);
+  var sizes = STATE.color ? productSizesInStockForColor(p, STATE.color) : [];
+  var stock = STATE.color && STATE.size ? productStock(p, STATE.size, STATE.color) : 0;
+  var html = '';
+  html += '<img class="pd-img" src="' + esc(img) + '">';
+  if(p.images && p.images.length>1){
+    html += '<div class="opt-row">';
+    p.images.forEach(function(im,idx){
+      html += '<button class="opt-pill thumb-pill ' + (idx===STATE.imgIdx?'sel':'') + '" data-img-idx="' + idx + '">صورة ' + (idx+1) + '</button>';
+    });
+    html += '</div>';
+  }
+  html += '<h3>' + esc(p.name) + '</h3>';
+  html += '<div style="color:var(--muted); font-size:12.5px;">' + esc(p.brand||'') + (p.gender? ' · '+esc(p.gender) : '') + '</div>';
+  html += '<div class="pd-price">' + money(p.price) + '</div>';
+
+  html += '<div class="fl">اللون</div><div class="opt-row">';
+  if(colors.length===0){ html += '<span style="font-size:12.5px; color:var(--danger);">غير متوفر حالياً بأي لون</span>'; }
+  colors.forEach(function(c){
+    html += '<button class="opt-pill color-pill ' + (STATE.color===c?'sel':'') + '" data-color="' + esc(c) + '">' + esc(c) + '</button>';
+  });
+  html += '</div>';
+
+  html += '<div class="fl">المقاس</div><div class="opt-row">';
+  if(sizes.length===0){ html += '<span style="font-size:12.5px; color:var(--danger);">اختر لون متاح أولاً</span>'; }
+  sizes.forEach(function(s){
+    html += '<button class="opt-pill size-pill ' + (STATE.size===s?'sel':'') + '" data-size="' + esc(s) + '">' + esc(s) + '</button>';
+  });
+  html += '</div>';
+
+  html += '<div class="qty-stepper">' +
+    '<button id="btnQtyMinus">−</button>' +
+    '<span id="qtyVal" style="font-family:Cairo; font-weight:800; font-size:16px;">' + STATE.qty + '</span>' +
+    '<button id="btnQtyPlus">+</button>' +
+    '<span style="color:var(--muted); font-size:11.5px;">(المتاح: ' + stock + ')</span>' +
+  '</div>';
+
+  html += '<button class="big-btn" id="btnAddCart" ' + (stock<=0?'disabled':'') + '>🛒 إضافة للسلة</button>';
+  return html;
+}
+
+function refreshProductSheet(){
+  var p = DATA.products.filter(function(x){ return x.id===STATE.pid; })[0];
+  if(!p) return;
+  var scroll = document.getElementById('sheet').scrollTop;
+  document.getElementById('sheet').innerHTML = '<button class="sheet-close" id="btnSheetClose">✕</button><div class="sheet-handle"></div>' + productSheetHTML(p);
+  document.getElementById('btnSheetClose').addEventListener('click', closeOverlay);
+  bindProductSheet(p);
+  document.getElementById('sheet').scrollTop = scroll;
+}
+
+function bindProductSheet(p){
+  var sheet = document.getElementById('sheet');
+  var colorPills = sheet.querySelectorAll('.color-pill');
+  for(var i=0;i<colorPills.length;i++){
+    colorPills[i].addEventListener('click', (function(el){ return function(){
+      STATE.color = el.getAttribute('data-color');
+      var sizes = productSizesInStockForColor(p, STATE.color);
+      STATE.size = sizes[0] || null;
+      STATE.qty = 1;
+      refreshProductSheet();
+    }; })(colorPills[i]));
+  }
+  var sizePills = sheet.querySelectorAll('.size-pill');
+  for(var j=0;j<sizePills.length;j++){
+    sizePills[j].addEventListener('click', (function(el){ return function(){
+      STATE.size = el.getAttribute('data-size');
+      STATE.qty = 1;
+      refreshProductSheet();
+    }; })(sizePills[j]));
+  }
+  var thumbPills = sheet.querySelectorAll('.thumb-pill');
+  for(var k=0;k<thumbPills.length;k++){
+    thumbPills[k].addEventListener('click', (function(el){ return function(){
+      STATE.imgIdx = Number(el.getAttribute('data-img-idx'));
+      refreshProductSheet();
+    }; })(thumbPills[k]));
+  }
+  var btnMinus = document.getElementById('btnQtyMinus');
+  if(btnMinus) btnMinus.addEventListener('click', function(){
+    STATE.qty = Math.max(1, STATE.qty-1); refreshProductSheet();
+  });
+  var btnPlus = document.getElementById('btnQtyPlus');
+  if(btnPlus) btnPlus.addEventListener('click', function(){
+    var stock = STATE.color && STATE.size ? productStock(p, STATE.size, STATE.color) : 0;
+    STATE.qty = Math.min(stock||1, STATE.qty+1); refreshProductSheet();
+  });
+  var btnAdd = document.getElementById('btnAddCart');
+  if(btnAdd) btnAdd.addEventListener('click', function(){
+    addToCart(p);
+  });
+}
+
+function addToCart(p){
+  if(!STATE.color || !STATE.size){ toast('اختر اللون والمقاس', 'err'); return; }
+  var stock = productStock(p, STATE.size, STATE.color);
+  if(stock<=0){ toast('غير متوفر بهذا الاختيار', 'err'); return; }
+  var existing = CART.filter(function(i){ return i.productId===p.id && i.size===STATE.size && i.color===STATE.color; })[0];
+  if(existing){ existing.qty = Math.min(existing.qty + STATE.qty, stock); }
+  else {
+    CART.push({ productId:p.id, name:p.name, size:STATE.size, color:STATE.color, qty:STATE.qty, price:p.price, image:(p.images&&p.images[0])||'' });
+  }
+  updateCartBadge();
+  toast('تمت الإضافة للسلة ✓', 'ok');
+  closeOverlay();
+}
+
+function updateCartBadge(){
+  var count = CART.reduce(function(s,i){ return s+i.qty; }, 0);
+  var badge = document.getElementById('cartBadge');
+  if(count>0){ badge.style.display='flex'; badge.textContent = count; }
+  else { badge.style.display='none'; }
+}
+
+function openCart(){
+  openOverlay(cartHTML());
+  bindCartEvents();
+}
+function cartHTML(){
+  if(CART.length===0){
+    return '<h3>سلة المشتريات</h3><div class="empty-state"><div class="ic">🛒</div>السلة فارغة</div>';
+  }
+  var total = CART.reduce(function(s,i){ return s+i.price*i.qty; }, 0);
+  var html = '<h3>سلة المشتريات</h3>';
+  CART.forEach(function(i,idx){
+    html += '<div class="cart-item">' +
+      '<img src="' + esc(i.image) + '">' +
+      '<div class="info">' +
+        '<div class="n">' + esc(i.name) + '</div>' +
+        '<div class="m">مقاس ' + esc(i.size) + ' · ' + esc(i.color) + '</div>' +
+        '<div class="ctrl">' +
+          '<button class="cart-qty-minus" data-idx="' + idx + '">−</button>' +
+          '<span style="font-size:12.5px; font-weight:700;">' + i.qty + '</span>' +
+          '<button class="cart-qty-plus" data-idx="' + idx + '">+</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="price-col">' +
+        '<div style="font-family:Cairo; font-weight:800; font-size:13px;">' + money(i.price*i.qty) + '</div>' +
+        '<button class="del cart-del" data-idx="' + idx + '">حذف</button>' +
+      '</div>' +
+    '</div>';
+  });
+  html += '<div class="summary-row total"><span>الإجمالي</span><span>' + money(total) + '</span></div>';
+  html += '<button class="big-btn green" id="btnGoCheckout">متابعة الطلب</button>';
+  return html;
+}
+function bindCartEvents(){
+  var sheet = document.getElementById('sheet');
+  var minus = sheet.querySelectorAll('.cart-qty-minus');
+  for(var i=0;i<minus.length;i++){
+    minus[i].addEventListener('click', (function(el){ return function(){
+      var idx = Number(el.getAttribute('data-idx'));
+      CART[idx].qty = Math.max(1, CART[idx].qty-1);
+      updateCartBadge(); openOverlay(cartHTML()); bindCartEvents();
+    }; })(minus[i]));
+  }
+  var plus = sheet.querySelectorAll('.cart-qty-plus');
+  for(var j=0;j<plus.length;j++){
+    plus[j].addEventListener('click', (function(el){ return function(){
+      var idx = Number(el.getAttribute('data-idx'));
+      var it = CART[idx];
+      var p = DATA.products.filter(function(x){ return x.id===it.productId; })[0];
+      var stock = p ? productStock(p, it.size, it.color) : 999;
+      it.qty = Math.min(stock||it.qty, it.qty+1);
+      updateCartBadge(); openOverlay(cartHTML()); bindCartEvents();
+    }; })(plus[j]));
+  }
+  var dels = sheet.querySelectorAll('.cart-del');
+  for(var k=0;k<dels.length;k++){
+    dels[k].addEventListener('click', (function(el){ return function(){
+      var idx = Number(el.getAttribute('data-idx'));
+      CART.splice(idx,1);
+      updateCartBadge(); openOverlay(cartHTML()); bindCartEvents();
+    }; })(dels[k]));
+  }
+  var goCheckout = document.getElementById('btnGoCheckout');
+  if(goCheckout) goCheckout.addEventListener('click', openCheckout);
+}
+
+function openCheckout(){
+  var html = '<h3>بيانات التوصيل</h3>' +
+    '<label class="fl">الاسم بالكامل</label><input class="field" id="custName">' +
+    '<label class="fl">رقم الموبايل</label><input class="field" id="custPhone" placeholder="01xxxxxxxxx">' +
+    '<label class="fl">العنوان</label><input class="field" id="custAddress" placeholder="المحافظة، المنطقة، الشارع">' +
+    '<button class="big-btn green" id="btnSubmitOrder">✅ تأكيد الطلب</button>';
+  openOverlay(html);
+  document.getElementById('btnSubmitOrder').addEventListener('click', submitOrder);
+}
+
+function submitOrder(){
+  var name = document.getElementById('custName').value.trim();
+  var phone = document.getElementById('custPhone').value.trim();
+  var address = document.getElementById('custAddress').value.trim();
+  if(!name || !phone){ toast('من فضلك أدخل الاسم ورقم الموبايل', 'err'); return; }
+  if(CART.length===0){ toast('السلة فارغة', 'err'); return; }
+
+  var btn = document.getElementById('btnSubmitOrder');
+  if(btn){ btn.disabled = true; btn.textContent = 'جاري الإرسال...'; }
+
+  var total = CART.reduce(function(s,i){ return s+i.price*i.qty; }, 0);
+  var orderId = 'PUB-' + Date.now().toString().slice(-6) + Math.random().toString(36).slice(2,5).toUpperCase();
+  var order = {
+    id: orderId, type:'online', source:'public_catalog', customerId:null,
+    customerName:name, customerPhone:phone, address:address,
+    items: CART.map(function(i){ return {productId:i.productId, name:i.name, size:i.size, color:i.color, qty:i.qty, price:i.price}; }),
+    total: total, status:'قيد التجهيز', date: new Date().toISOString(), paymentMethod:'كاش عند الاستلام',
+    _stockConfirmed:false
+  };
+
+  function finishAndSendWhatsapp(savedOk){
+    var lines = order.items.map(function(i){
+      return '• ' + i.name + ' | مقاس ' + i.size + ' | ' + i.color + ' × ' + i.qty + ' = ' + money(i.price*i.qty);
+    }).join('%0A');
+    var noteLine = savedOk ? '' : '%0A(تنويه: لم يتم حفظ الطلب تلقائياً في النظام، برجاء تسجيله يدوياً)';
+    var msg = 'طلب جديد من الكتالوج العام رقم ' + orderId + '%0Aالاسم: ' + name +
+      '%0Aالموبايل: ' + phone + '%0Aالعنوان: ' + address +
+      '%0A' + lines + '%0Aالإجمالي: ' + money(total) + noteLine;
+    var wa = (DATA.whatsapp||'').replace(/[^0-9]/g,'');
+    window.open('https://wa.me/' + wa + '?text=' + encodeURIComponent(msg).replace(/%250A/g,'%0A'), '_blank');
+    CART = [];
+    updateCartBadge();
+    openOverlay('<div class="success-box"><div class="ic">✅</div><h3 style="margin-top:10px;">تم إرسال طلبك بنجاح</h3><div style="color:var(--muted); font-size:13px; margin-top:6px;">هيتم التواصل معاك قريباً لتأكيد الطلب</div></div>');
+  }
+
+  try{
+    var app = firebase.apps && firebase.apps.length ? firebase.apps[0] : firebase.initializeApp(DATA.firebaseConfig);
+    var db = firebase.firestore(app);
+    db.collection('shops').doc(DATA.shopId).collection('orders').doc(orderId).set(order)
+      .then(function(){ finishAndSendWhatsapp(true); })
+      .catch(function(err){ console.error('order save failed', err); finishAndSendWhatsapp(false); });
+  }catch(err){
+    console.error('firebase init failed', err);
+    finishAndSendWhatsapp(false);
+  }
+}
+
+document.getElementById('searchInput').addEventListener('input', renderProducts);
+document.getElementById('btnCart').addEventListener('click', openCart);
+document.getElementById('brandName').textContent = DATA.shopName || 'المتجر';
+document.getElementById('brandLogo').textContent = DATA.shopLogo || '👟';
+document.title = DATA.shopName || 'المتجر';
+renderProducts();
+<\/script>
+</body>
+</html>
+
+`;
+function buildCatalogData(){
+  const products = DB.products.map(p=>{
+    const stock = {};
+    DB.inventory.filter(i=>i.productId===p.id).forEach(i=>{ stock[i.size+'|'+i.color] = i.qty; });
+    return {id:p.id, name:p.name, brand:p.brand, gender:p.gender, price:p.price, images:p.images, colors:p.colors, sizes:p.sizes, stock};
+  });
+  return {
+    shopId: fbUser.uid, shopName: DB.settings.shopName, shopLogo: DB.settings.shopLogo || '👟',
+    whatsapp: DB.settings.whatsapp, exportedAt: new Date().toISOString(), firebaseConfig: firebaseConfig, products: products
+  };
+}
+function catalogFilenameSafe(s){ return (s||'').replace(/[^a-zA-Z0-9\u0600-\u06FF_-]+/g,'_').slice(0,40) || 'catalog'; }
+function downloadPublicCatalog(){
+  if(!fbUser){ toast('لازم تكون مسجل دخول أول','err'); return; }
+  if(!DB.products || DB.products.length===0){ toast('لا توجد منتجات لتصديرها بعد','err'); return; }
+  const data = buildCatalogData();
+  const shopNameEsc = escapeXml(DB.settings.shopName || 'المتجر');
+  const logoEsc = escapeXml(DB.settings.shopLogo || '👟');
+  const html = CATALOG_TEMPLATE
+    .split('__SHOPNAME__').join(shopNameEsc)
+    .split('__LOGO__').join(logoEsc)
+    .split('/*__CATALOG_DATA__*/').join(JSON.stringify(data));
+  const blob = new Blob([html], {type:'text/html'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'catalog-' + catalogFilenameSafe(DB.settings.shopName) + '.html';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  toast('تم تنزيل صفحة الكتالوج ✓ ارفعها على استضافة (زي GitHub Pages) عشان تشتغل بالكامل','ok');
+}
+
 function backupJson(){
   const blob = new Blob([JSON.stringify(DB,null,2)], {type:'application/json'});
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'kotshiyat-backup.json'; a.click();
@@ -2462,6 +3314,7 @@ function bindDynamic(){
   c.querySelectorAll('[data-reprint-invoice]').forEach(el=> el.addEventListener('click', ()=>{ const o = DB.orders.find(x=>x.id===el.dataset.reprintInvoice); if(o) printInvoice(o); }));
   c.querySelectorAll('[data-edit-order]').forEach(el=> el.addEventListener('click', ()=> openOrderEditForm(el.dataset.editOrder)));
   c.querySelectorAll('[data-del-order]').forEach(el=> el.addEventListener('click', ()=> deleteOrder(el.dataset.delOrder)));
+  c.querySelectorAll('[data-confirm-public-stock]').forEach(el=> el.addEventListener('click', ()=> confirmPublicOrderStock(el.dataset.confirmPublicStock)));
 
   // customers
   c.querySelectorAll('[data-toggle-cust]').forEach(el=> el.addEventListener('click', ()=>{ const box = document.getElementById('custhist_'+el.dataset.toggleCust); box.style.display = box.style.display==='none'?'block':'none'; }));
@@ -2469,6 +3322,18 @@ function bindDynamic(){
   if(btnNewCustomer) btnNewCustomer.addEventListener('click', ()=> openCustomerForm(null));
   c.querySelectorAll('[data-edit-customer]').forEach(el=> el.addEventListener('click', ()=> openCustomerForm(el.dataset.editCustomer)));
   c.querySelectorAll('[data-del-customer]').forEach(el=> el.addEventListener('click', ()=> deleteCustomer(el.dataset.delCustomer)));
+
+  // suppliers & distributors
+  c.querySelectorAll('[data-supdist-tab]').forEach(el=> el.addEventListener('click', ()=>{ window._supDist.tab = el.dataset.supdistTab; render(); }));
+  const btnNewSupplier = document.getElementById('btnNewSupplier');
+  if(btnNewSupplier) btnNewSupplier.addEventListener('click', ()=> openSupplierForm(null));
+  c.querySelectorAll('[data-open-supplier]').forEach(el=> el.addEventListener('click', ()=> openSupplierLedger(el.dataset.openSupplier)));
+  c.querySelectorAll('[data-del-supplier]').forEach(el=> el.addEventListener('click', ()=> deleteSupplier(el.dataset.delSupplier)));
+  const btnNewDistributor = document.getElementById('btnNewDistributor');
+  if(btnNewDistributor) btnNewDistributor.addEventListener('click', ()=> openDistributorForm(null));
+  c.querySelectorAll('[data-open-distributor]').forEach(el=> el.addEventListener('click', ()=> openDistributorLedger(el.dataset.openDistributor)));
+  c.querySelectorAll('[data-del-distributor]').forEach(el=> el.addEventListener('click', ()=> deleteDistributor(el.dataset.delDistributor)));
+  c.querySelectorAll('[data-pay-installment]').forEach(el=> el.addEventListener('click', ()=> payInstallment(el.dataset.payInstallment)));
 
   // expenses
   const btnAddExpense = document.getElementById('btnAddExpense');
@@ -2490,6 +3355,8 @@ function bindDynamic(){
   if(btnProcessReturn) btnProcessReturn.addEventListener('click', ()=> processReturn(btnProcessReturn.dataset.oid));
   c.querySelectorAll('[data-del-return]').forEach(el=> el.addEventListener('click', ()=> deleteReturnLog(el.dataset.delReturn)));
   const btnSaveSettings = document.getElementById('btnSaveSettings');
+  const btnDownloadCatalog = document.getElementById('btnDownloadCatalog');
+  if(btnDownloadCatalog) btnDownloadCatalog.addEventListener('click', downloadPublicCatalog);
   if(btnSaveSettings) btnSaveSettings.addEventListener('click', saveAdminSettings);
   const btnOpenActivateSettings = document.getElementById('btnOpenActivateSettings');
   if(btnOpenActivateSettings) btnOpenActivateSettings.addEventListener('click', ()=> openSheet(activationSheetHTML()));
@@ -2530,6 +3397,22 @@ function bindSheetDynamic(){
     setInv(pid,sz,cl, Math.max(0, Number(el.value)||0));
     saveDB(); toast('تم تحديث الكمية ✓','ok');
   }));
+  const btnSaveSupplier = sheet.querySelector('#btnSaveSupplier');
+  if(btnSaveSupplier) btnSaveSupplier.addEventListener('click', ()=> saveSupplier(btnSaveSupplier.dataset.sid || null));
+  const btnAddSupplierTx = sheet.querySelector('#btnAddSupplierTx');
+  if(btnAddSupplierTx) btnAddSupplierTx.addEventListener('click', ()=> addSupplierTx(btnAddSupplierTx.dataset.sid));
+  sheet.querySelectorAll('[data-del-supplier-tx]').forEach(el=> el.addEventListener('click', ()=> deleteSupplierTx(el.dataset.delSupplierTx)));
+  const btnAddInstallment = sheet.querySelector('#btnAddInstallment');
+  if(btnAddInstallment) btnAddInstallment.addEventListener('click', ()=> addInstallment(btnAddInstallment.dataset.sid));
+  sheet.querySelectorAll('[data-pay-installment]').forEach(el=> el.addEventListener('click', ()=> payInstallment(el.dataset.payInstallment)));
+  sheet.querySelectorAll('[data-del-installment]').forEach(el=> el.addEventListener('click', ()=> deleteInstallment(el.dataset.delInstallment)));
+  const btnSaveDistributor = sheet.querySelector('#btnSaveDistributor');
+  if(btnSaveDistributor) btnSaveDistributor.addEventListener('click', ()=> saveDistributor(btnSaveDistributor.dataset.did || null));
+  const btnAddDistributorTx = sheet.querySelector('#btnAddDistributorTx');
+  if(btnAddDistributorTx) btnAddDistributorTx.addEventListener('click', ()=> addDistributorTx(btnAddDistributorTx.dataset.did));
+  sheet.querySelectorAll('[data-del-distributor-tx]').forEach(el=> el.addEventListener('click', ()=> deleteDistributorTx(el.dataset.delDistributorTx)));
+  sheet.querySelectorAll('[data-open-supplier]').forEach(el=> el.addEventListener('click', ()=> openSupplierLedger(el.dataset.openSupplier)));
+
   const btnSaveCustomer = sheet.querySelector('#btnSaveCustomer');
   if(btnSaveCustomer) btnSaveCustomer.addEventListener('click', ()=> saveCustomer(btnSaveCustomer.dataset.cid || null));
   const btnSaveExpense = sheet.querySelector('#btnSaveExpense');
