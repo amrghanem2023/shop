@@ -116,6 +116,7 @@ input,select,textarea{font-family:'Tajawal',sans-serif;}
 .big-btn{width:100%; background:var(--accent); color:#fff; border:none; padding:14px; border-radius:14px; font-family:'Cairo'; font-weight:800; font-size:15.5px; margin-top:16px; display:flex;align-items:center;justify-content:center;gap:8px;}
 .big-btn.ghost{background:var(--panel); border:1px solid var(--line); color:var(--text-on-ink);}
 .big-btn.green{background:var(--accent2);}
+.big-btn.danger{background:var(--danger);}
 .big-btn:disabled{opacity:.4;}
 .big-btn.sm{padding:10px; font-size:13.5px; margin-top:8px;}
 
@@ -2132,6 +2133,13 @@ function renderAdminSettings(){
   <label class="fl">آخر رقم فاتورة صادر</label>
   <input class="field" id="stInvoiceSeq" type="number" value="${s.invoiceSeq}" min="1">
   <button class="big-btn green" id="btnSaveSettings">💾 حفظ الإعدادات</button>
+
+  <div class="section-title" style="margin-top:24px; color:var(--danger);">⚠️ منطقة خطر</div>
+  <div style="background:#fdecea; border:1px solid var(--danger); border-radius:12px; padding:12px; font-size:12.5px;">
+    <div style="font-weight:700; margin-bottom:6px;">مسح كل بيانات المحل نهائيًا</div>
+    <div style="color:var(--muted); margin-bottom:10px;">هيتمسح كل المنتجات، المخزون، الطلبات، العملاء، المصروفات، المرتجعات، وصور المنتجات — نهائيًا ومن غير رجعة. إعدادات المحل والتفعيل هيفضلوا زي ما هما.</div>
+    <button class="big-btn danger" id="btnWipeShopData">🗑️ مسح كل بيانات المحل</button>
+  </div>
   `;
 }
 function saveAdminSettings(){
@@ -2147,6 +2155,51 @@ function saveAdminSettings(){
   s.pricesIncludeVat = document.getElementById('stPricesIncludeVat').checked;
   s.invoiceSeq = Math.max(1, Number(document.getElementById('stInvoiceSeq').value)||1);
   saveDB(); toast('تم حفظ الإعدادات ✓','ok'); render();
+}
+/* ================= مسح كل بيانات المحل نهائيًا ================= */
+async function wipeShopData(){
+  if(!fbUser){ toast('لازم تكون مسجّل دخول','err'); return; }
+  const typed = prompt('العملية دي هتمسح كل المنتجات والمخزون والطلبات والعملاء والمصروفات والمرتجعات وصور المنتجات نهائيًا ومش هترجع تاني.\n\nاكتب "مسح" بالظبط عشان تأكد:');
+  if(typed !== 'مسح'){ toast('تم الإلغاء','err'); return; }
+
+  const btn = document.getElementById('btnWipeShopData');
+  if(btn){ btn.disabled = true; btn.textContent = '⏳ جارٍ المسح...'; }
+  try{
+    // 1) امسح كل الطلبات من الـ subcollection
+    const ordersSnap = await ordersRef(fbUser.uid).get();
+    const orderDocs = ordersSnap.docs;
+    for(let i=0;i<orderDocs.length;i+=400){
+      const batch = fbStore.batch();
+      orderDocs.slice(i,i+400).forEach(d=> batch.delete(d.ref));
+      await batch.commit();
+    }
+    // 2) امسح كل صور المنتجات من Storage (مجلد كل منتج فيه صوره)
+    try{
+      const productsFolder = fbStorage.ref(`shops/${fbUser.uid}/products`);
+      const listRes = await productsFolder.listAll();
+      await Promise.all(listRes.prefixes.map(async folderRef=>{
+        const sub = await folderRef.listAll();
+        await Promise.all(sub.items.map(item=> item.delete().catch(()=>{})));
+      }));
+      await Promise.all(listRes.items.map(item=> item.delete().catch(()=>{})));
+    }catch(err){ console.warn('Storage cleanup partial failure (متوقع لو Storage مش مفعّل):', err); }
+
+    // 3) صفّر باقي بيانات المحل (المنتجات/المخزون/العملاء/المصروفات/المرتجعات/السلة) واحفظها
+    DB.products = [];
+    DB.inventory = [];
+    DB.customers = [];
+    DB.orders = [];
+    DB.expenses = [];
+    DB.returns = [];
+    DB.cart = [];
+    saveDB();
+    toast('تم مسح كل بيانات المحل ✓','ok');
+    render();
+  }catch(err){
+    console.error('wipeShopData failed', err);
+    toast('حصل خطأ أثناء المسح، جرب تاني','err');
+    if(btn){ btn.disabled = false; btn.textContent = '🗑️ مسح كل بيانات المحل'; }
+  }
 }
 
 /* ================= EXCEL EXPORT / BACKUP ================= */
@@ -2442,6 +2495,8 @@ function bindDynamic(){
   if(btnOpenActivateSettings) btnOpenActivateSettings.addEventListener('click', ()=> openSheet(activationSheetHTML()));
   const btnLogoutShop = document.getElementById('btnLogoutShop');
   if(btnLogoutShop) btnLogoutShop.addEventListener('click', ()=>{ if(confirm('هل تريد تسجيل الخروج؟')) doLogout(); });
+  const btnWipeShopData = document.getElementById('btnWipeShopData');
+  if(btnWipeShopData) btnWipeShopData.addEventListener('click', wipeShopData);
   const btnRefreshAllShops = document.getElementById('btnRefreshAllShops');
   if(btnRefreshAllShops) btnRefreshAllShops.addEventListener('click', ()=>{ _allShopsCache=null; render(); });
 
