@@ -284,13 +284,19 @@ async function uploadProductImage(dataUrl, productId, idx, onProgress){
   const ref = fbStorage.ref(path);
   const task = ref.putString(dataUrl, 'data_url', {contentType:'image/jpeg'});
   await new Promise((resolve, reject)=>{
+    // مهلة 10 ثواني: لو الرفع مش بيتحرك (مثلاً لأن Storage مش مفعّل في المشروع)،
+    // نلغي المحاولة ونرجع نستخدم نسخة الصورة المحلية بدل ما التطبيق يفضل معلّق للأبد
+    const timeoutId = setTimeout(()=>{
+      task.cancel();
+      reject(new Error('upload-timeout'));
+    }, 10000);
     task.on('state_changed',
       snap=>{
         const pct = Math.round((snap.bytesTransferred / snap.totalBytes) * 100);
         if(onProgress) onProgress(pct);
       },
-      err=> reject(err),
-      ()=> resolve()
+      err=>{ clearTimeout(timeoutId); reject(err); },
+      ()=>{ clearTimeout(timeoutId); resolve(); }
     );
   });
   return await task.snapshot.ref.getDownloadURL();
