@@ -160,6 +160,11 @@ label.fl{font-size:12px; color:var(--muted); font-weight:700; margin-top:12px; d
 .admin-tabs{display:flex; flex-wrap:wrap; gap:7px; padding-bottom:2px;}
 .atab{flex:none; background:var(--panel); border:1px solid var(--line); color:var(--text-on-ink); font-size:12px; padding:8px 13px; border-radius:11px; font-weight:700;}
 .atab.active{background:var(--accent); border-color:var(--accent); color:#fff;}
+.atab#btnRefreshData{background:var(--accent2); border-color:var(--accent2); color:#fff;}
+.atab#btnRefreshData:disabled{opacity:.7;}
+.atab#btnRefreshData .spin-ic{display:inline-block;}
+.atab#btnRefreshData.spinning .spin-ic{animation:refreshSpin .8s linear infinite;}
+@keyframes refreshSpin{ from{transform:rotate(0deg);} to{transform:rotate(360deg);} }
 .kpi-grid{display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:12px;}
 .kpi{background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:13px;}
 .kpi .l{font-size:11px; color:var(--muted); font-weight:700;}
@@ -381,6 +386,34 @@ async function migrateOrdersIfNeeded(uid, legacyOrders){
     console.log('تم ترحيل', legacyOrders.length, 'طلب لمستندات منفصلة');
   }catch(err){
     console.error('orders migration failed', err);
+  }
+}
+
+async function manualRefreshData(btnEl){
+  if(btnEl){ btnEl.classList.add('spinning'); btnEl.disabled = true; }
+  try{
+    if(fbUser){
+      const snap = await shopDocRef(fbUser.uid).get({source:'server'});
+      if(snap.exists){
+        const data = snap.data() || {};
+        const currentView = DB && DB.currentView;
+        DB = data.db || DB;
+        dbMeta = data.meta || dbMeta;
+        if(currentView) DB.currentView = currentView;
+        ensureDBDefaults();
+        try{ localStorage.setItem(DB_KEY, JSON.stringify(DB)); }catch(e){}
+      }
+      const osnap = await ordersRef(fbUser.uid).get({source:'server'});
+      DB.orders = osnap.docs.map(d=> d.data());
+    }
+    render();
+    toast('تم تحديث البيانات ✓','ok');
+  }catch(err){
+    console.error('manual refresh failed', err);
+    render();
+    toast('تعذر تحديث البيانات، جرب تاني','err');
+  }finally{
+    if(btnEl){ btnEl.classList.remove('spinning'); btnEl.disabled = false; }
   }
 }
 
@@ -724,6 +757,7 @@ function ensureDBDefaults(){
   if(!DB.supplierInstallments) DB.supplierInstallments = [];
   if(!DB.distributors) DB.distributors = [];
   if(!DB.distributorLedger) DB.distributorLedger = [];
+  if(!DB.purchaseOrders) DB.purchaseOrders = [];
 }
 const FIRESTORE_DOC_LIMIT_BYTES = 1048576; // حد فايرستور الرسمي لحجم أي مستند
 function saveDB(){
@@ -1193,6 +1227,7 @@ function adminTabsHTML(active){
   ];
   if(isSuperAdmin()) tabs.push(['admin-allshops','🛡️ كل المحلات']);
   return `<div class="tabbar-scroll"><div class="admin-tabs">${tabs.map(t=>`<button class="atab ${active===t[0]?'active':''}" data-nav-go="${t[0]}">${t[1]}</button>`).join('')}
+  <button class="atab" id="btnRefreshData" title="تحديث البيانات الآن"><span class="spin-ic">🔄</span> تحديث</button>
   <button class="atab" style="background:var(--danger); border-color:var(--danger); color:#fff;" id="btnLogoutAdmin">خروج</button>
   </div></div>`;
 }
@@ -1251,6 +1286,15 @@ function computeFinance(scopeFn){
   orders.forEach(o=> o.items.forEach(i=>{ const p = DB.products.find(pp=>pp.id===i.productId); cogs += (p? p.cost:0) * i.qty; }));
   const expenses = DB.expenses.filter(e=> scopeFn(e.date)).reduce((s,e)=>s+e.amount,0);
   return {revenue, cogs, expenses, profit: revenue - cogs - expenses, count:orders.length};
+}
+function computeCashFlow(scopeFn){
+  const revenue = DB.orders.filter(o=>o.status!=='ملغي' && scopeFn(o.date)).reduce((s,o)=>s+o.total,0);
+  const distributorCollections = DB.distributorLedger.filter(t=>t.type==='collection' && scopeFn(t.date)).reduce((s,t)=>s+t.amount,0);
+  const expensesTotal = DB.expenses.filter(e=>scopeFn(e.date)).reduce((s,e)=>s+e.amount,0);
+  const supplierPayments = DB.supplierLedger.filter(t=>t.type==='payment' && scopeFn(t.date)).reduce((s,t)=>s+t.amount,0);
+  const cashIn = revenue + distributorCollections;
+  const cashOut = expensesTotal + supplierPayments;
+  return {revenue, distributorCollections, cashIn, expensesTotal, supplierPayments, cashOut, net: cashIn - cashOut};
 }
 function renderAdminDashboard(){
   const today = computeFinance(d=> d.slice(0,10)===todayStr());
@@ -2023,26 +2067,31 @@ window._supDist = window._supDist || {tab:'suppliers'};
 function renderAdminSuppliers(){
   const tab = window._supDist.tab;
   const totalSuppliersDebt = DB.suppliers.reduce((s,x)=> s + Math.max(0,supplierBalance(x.id)), 0);
+  const totalPaidToSuppliers = DB.supplierLedger.filter(t=>t.type==='payment').reduce((s,t)=>s+t.amount,0);
   const totalDistributorsDue = DB.distributors.reduce((s,x)=> s + Math.max(0,distributorBalance(x.id)), 0);
   const pendingInstallments = DB.supplierInstallments.filter(i=>!i.paid);
   const overdueCount = pendingInstallments.filter(i=> daysUntil(i.dueDate) < 0).length;
+  const pendingReceive = DB.purchaseOrders.filter(po=>!po.stockReceived).length;
 
   return `${adminTabsHTML('admin-suppliers')}
   <div class="section-title">الموردين والموزعين</div>
   <div class="kpi-grid">
     <div class="kpi danger"><div class="l">مستحق للموردين</div><div class="v">${money(totalSuppliersDebt)}</div></div>
+    <div class="kpi"><div class="l">إجمالي المدفوع للموردين (الكل)</div><div class="v">${money(totalPaidToSuppliers)}</div></div>
     <div class="kpi green"><div class="l">مستحق من الموزعين</div><div class="v">${money(totalDistributorsDue)}</div></div>
     <div class="kpi accent"><div class="l">أقساط لسه مدفوعتش</div><div class="v">${pendingInstallments.length}</div></div>
     <div class="kpi danger"><div class="l">أقساط متأخرة</div><div class="v">${overdueCount}</div></div>
+    <div class="kpi accent"><div class="l">أوامر شراء لسه متسلمتش</div><div class="v">${pendingReceive}</div></div>
   </div>
 
-  <div style="display:flex; gap:8px; margin-top:16px;">
+  <div style="display:flex; gap:8px; margin-top:16px; flex-wrap:wrap;">
     <button class="chip ${tab==='suppliers'?'active':''}" data-supdist-tab="suppliers">🏭 الموردين</button>
+    <button class="chip ${tab==='purchaseOrders'?'active':''}" data-supdist-tab="purchaseOrders">📝 أوامر الشراء</button>
     <button class="chip ${tab==='distributors'?'active':''}" data-supdist-tab="distributors">🚚 الموزعين</button>
     <button class="chip ${tab==='installments'?'active':''}" data-supdist-tab="installments">📆 الأقساط</button>
   </div>
 
-  ${tab==='suppliers'? renderSuppliersTab() : tab==='distributors'? renderDistributorsTab() : renderInstallmentsTab()}
+  ${tab==='suppliers'? renderSuppliersTab() : tab==='purchaseOrders'? renderPurchaseOrdersTab() : tab==='distributors'? renderDistributorsTab() : renderInstallmentsTab()}
   `;
 }
 
@@ -2055,7 +2104,7 @@ function renderSuppliersTab(){
   list.map(s=>{
     const bal = supplierBalance(s.id);
     return `<div class="list-row">
-      <div style="cursor:pointer;" data-open-supplier="${s.id}"><div class="main">${s.name}</div><div class="sub">${s.phone||''}${s.notes? ' · '+s.notes : ''}</div></div>
+      <div style="cursor:pointer;" data-open-supplier="${s.id}"><div class="main">${s.name}${s.status==='قيد التسجيل'?' <span class="status-pill prep" style="font-size:9.5px;">قيد التسجيل</span>':''}</div><div class="sub">${s.phone||''}${s.notes? ' · '+s.notes : ''}</div></div>
       <div style="text-align:left;">
         <div style="font-family:Cairo;font-weight:800;font-size:13px;color:${bal>0?'var(--danger)':'var(--accent2)'};">${bal>0? 'مستحق عليك '+money(bal) : (bal<0? 'رصيدك عنده '+money(-bal) : 'متوازن')}</div>
         <div style="display:flex; gap:6px; margin-top:6px;">
@@ -2069,11 +2118,16 @@ function renderSuppliersTab(){
 }
 function supplierFormHTML(s){
   const isEdit = !!s;
-  s = s || {id:'', name:'', phone:'', notes:''};
+  s = s || {id:'', name:'', phone:'', notes:'', status:'مسجل'};
   return `
   <h3 style="font-family:Cairo;">${isEdit?'تعديل مورد':'مورد جديد'}</h3>
   <label class="fl">اسم المورد</label><input class="field" id="sf_name" value="${s.name}">
   <label class="fl">رقم الموبايل</label><input class="field" id="sf_phone" value="${s.phone||''}">
+  <label class="fl">حالة التسجيل</label>
+  <select class="field" id="sf_status">
+    <option value="مسجل" ${s.status!=='قيد التسجيل'?'selected':''}>مسجل بالكامل</option>
+    <option value="قيد التسجيل" ${s.status==='قيد التسجيل'?'selected':''}>قيد التسجيل (بيانات مبدئية)</option>
+  </select>
   <label class="fl">ملاحظات</label><input class="field" id="sf_notes" value="${s.notes||''}">
   <button class="big-btn" id="btnSaveSupplier" data-sid="${s.id}">💾 حفظ المورد</button>
   `;
@@ -2082,10 +2136,11 @@ function openSupplierForm(sid){ const s = sid? DB.suppliers.find(x=>x.id===sid) 
 function saveSupplier(sid){
   const name = document.getElementById('sf_name').value.trim();
   const phone = document.getElementById('sf_phone').value.trim();
+  const status = document.getElementById('sf_status').value;
   const notes = document.getElementById('sf_notes').value.trim();
   if(!name){ toast('اكتب اسم المورد','err'); return; }
-  if(sid){ Object.assign(DB.suppliers.find(x=>x.id===sid), {name, phone, notes}); }
-  else { DB.suppliers.push({id:uid('sup_'), name, phone, notes}); }
+  if(sid){ Object.assign(DB.suppliers.find(x=>x.id===sid), {name, phone, status, notes}); }
+  else { DB.suppliers.push({id:uid('sup_'), name, phone, status, notes}); }
   saveDB(); toast('تم الحفظ ✓','ok'); closeSheet(); render();
 }
 function deleteSupplier(sid){
@@ -2175,15 +2230,13 @@ function payInstallment(iid){
   inst.paid = true; inst.paidDate = new Date().toISOString();
   DB.supplierLedger.push({id:uid('slt_'), supplierId:inst.supplierId, type:'payment', amount:inst.amount, note:'سداد قسط', date:new Date().toISOString()});
   saveDB(); toast('تم تسجيل الدفع ✓','ok');
-  if(document.getElementById('sheetContent')) openSheet(supplierLedgerHTML(inst.supplierId)); else render();
+  closeSheet(); render();
 }
 function deleteInstallment(iid){
   if(!confirm('حذف هذا القسط؟')) return;
-  const inst = DB.supplierInstallments.find(x=>x.id===iid); if(!inst) return;
-  const sid = inst.supplierId;
   DB.supplierInstallments = DB.supplierInstallments.filter(x=>x.id!==iid);
   saveDB(); toast('تم الحذف','ok');
-  if(document.getElementById('sheetContent')) openSheet(supplierLedgerHTML(sid)); else render();
+  closeSheet(); render();
 }
 
 /* ----- الأقساط (نظرة شاملة على كل الموردين) ----- */
@@ -2206,6 +2259,225 @@ function renderInstallmentsTab(){
     </div>`;
   }).join('')}
   `;
+}
+
+/* ----- أوامر الشراء (كميات وأصناف من مورد + دفعة مقدمة وأقساط) ----- */
+window._poDraft = window._poDraft || {supplierId:null, newSupplierName:'', newSupplierPhone:'', items:[], downPayment:0, installmentsCount:1, firstDueDate:''};
+function resetPODraft(){
+  window._poDraft = {supplierId:null, newSupplierName:'', newSupplierPhone:'', items:[], downPayment:0, installmentsCount:1, firstDueDate:''};
+}
+function openNewPurchaseOrder(){ resetPODraft(); openSheet(purchaseOrderFormHTML()); }
+
+function renderPurchaseOrdersTab(){
+  const list = [...DB.purchaseOrders].sort((a,b)=> new Date(b.date)-new Date(a.date));
+  return `
+  <button class="big-btn sm" id="btnNewPO">+ أمر شراء جديد</button>
+  ${list.length===0? `<div class="empty-state"><div class="ic">📝</div>لا توجد أوامر شراء بعد</div>` :
+  list.map(po=>{
+    const s = DB.suppliers.find(x=>x.id===po.supplierId);
+    const paidCount = po.installmentIds.filter(id=>{ const i=DB.supplierInstallments.find(x=>x.id===id); return i&&i.paid; }).length;
+    return `<div class="list-row">
+      <div><div class="main">${s? s.name : 'مورد محذوف'}</div>
+        <div class="sub">${po.items.length} صنف · ${po.date}${po.installmentIds.length? ' · أقساط '+paidCount+'/'+po.installmentIds.length+' مدفوعة' : ''}</div>
+      </div>
+      <div style="text-align:left;">
+        <div style="font-family:Cairo; font-weight:800; font-size:13px;">${money(po.totalAmount)}</div>
+        <div style="display:flex; gap:6px; margin-top:6px; flex-wrap:wrap; justify-content:flex-end;">
+          ${!po.stockReceived? `<button class="mini-btn green" data-receive-po="${po.id}">📦 تم الاستلام</button>` : `<span class="status-pill shipped">تم الاستلام</span>`}
+          <button class="mini-btn" data-view-po="${po.id}">تفاصيل</button>
+          <button class="mini-btn danger" data-del-po="${po.id}">حذف</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('')}
+  `;
+}
+
+function purchaseOrderFormHTML(){
+  const d = window._poDraft;
+  const suppliersOptions = DB.suppliers.map(s=>`<option value="${s.id}" ${d.supplierId===s.id?'selected':''}>${s.name}${s.status==='قيد التسجيل'?' (قيد التسجيل)':''}</option>`).join('');
+
+  let itemsHTML = '';
+  d.items.forEach((it,idx)=>{
+    const product = DB.products.find(p=>p.id===it.productId);
+    const lineTotal = (it.qty||0)*(it.unitCost||0);
+    itemsHTML += `<div style="background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:10px; margin-top:10px;">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <label class="fl" style="margin-top:0;">الصنف #${idx+1}</label>
+        <button class="mini-btn danger" data-remove-po-item="${idx}">حذف</button>
+      </div>
+      <select class="field" data-po-item-field="productId" data-idx="${idx}">
+        <option value="">اختر منتج...</option>
+        ${DB.products.map(p=>`<option value="${p.id}" ${it.productId===p.id?'selected':''}>${p.name}</option>`).join('')}
+      </select>
+      ${product? `
+      <div class="two-col" style="margin-top:8px;">
+        <div><label class="fl">اللون</label><select class="field" data-po-item-field="color" data-idx="${idx}">${product.colors.map(c=>`<option ${it.color===c?'selected':''}>${c}</option>`).join('')}</select></div>
+        <div><label class="fl">المقاس</label><select class="field" data-po-item-field="size" data-idx="${idx}">${product.sizes.map(sz=>`<option ${it.size===sz?'selected':''}>${sz}</option>`).join('')}</select></div>
+      </div>
+      <div class="two-col" style="margin-top:8px;">
+        <div><label class="fl">الكمية</label><input class="field" type="number" min="1" value="${it.qty||1}" data-po-item-field="qty" data-idx="${idx}"></div>
+        <div><label class="fl">تكلفة الوحدة</label><input class="field" type="number" value="${it.unitCost||0}" data-po-item-field="unitCost" data-idx="${idx}"></div>
+      </div>
+      <div style="text-align:left; margin-top:6px; font-family:Cairo; font-weight:800; color:var(--accent2);">${money(lineTotal)}</div>
+      ` : `<div style="font-size:11.5px; color:var(--muted); margin-top:6px;">اختر منتج عشان تحدد اللون والمقاس والكمية</div>`}
+    </div>`;
+  });
+
+  const total = d.items.reduce((s,it)=> s + (it.qty||0)*(it.unitCost||0), 0);
+  const down = Math.min(Math.max(0,d.downPayment||0), total);
+  const remaining = Math.max(0, total - down);
+  const count = Math.max(1, d.installmentsCount||1);
+  const perInstallment = remaining>0? remaining/count : 0;
+
+  let scheduleHTML = '';
+  if(remaining>0 && d.firstDueDate){
+    const base = new Date(d.firstDueDate);
+    for(let i=0;i<count;i++){
+      const dt = new Date(base); dt.setMonth(dt.getMonth()+i);
+      scheduleHTML += `<div class="list-row"><div class="sub">قسط ${i+1} — ${dt.toLocaleDateString('ar-EG')}</div><div style="font-family:Cairo; font-weight:800;">${money(perInstallment)}</div></div>`;
+    }
+  }
+
+  return `
+  <h3 style="font-family:Cairo;">أمر شراء جديد</h3>
+
+  <label class="fl">المورد</label>
+  <select class="field" id="poSupplier">
+    <option value="">اختر مورد مسجل...</option>
+    ${suppliersOptions}
+    <option value="__new__" ${d.supplierId==='__new__'?'selected':''}>➕ مورد جديد (قيد التسجيل)</option>
+  </select>
+  ${d.supplierId==='__new__'? `
+  <div class="two-col" style="margin-top:8px;">
+    <div><label class="fl">اسم المورد</label><input class="field" id="poNewSupplierName" value="${d.newSupplierName||''}"></div>
+    <div><label class="fl">رقم الموبايل</label><input class="field" id="poNewSupplierPhone" value="${d.newSupplierPhone||''}"></div>
+  </div>
+  <div style="font-size:11px; color:var(--muted); margin-top:4px;">هيتسجل تلقائيًا كمورد "قيد التسجيل" وتقدر تكمل بياناته بعدين من صفحة الموردين.</div>
+  ` : ''}
+
+  <div class="section-title">الأصناف المطلوبة</div>
+  ${itemsHTML}
+  <button class="big-btn sm" id="btnAddPOItem">+ إضافة صنف</button>
+
+  <div class="kpi accent" style="margin-top:14px;"><div class="l">إجمالي أمر الشراء</div><div class="v">${money(total)}</div></div>
+
+  <div class="section-title">خطة الدفع</div>
+  <label class="fl">الدفعة المقدمة</label>
+  <input class="field" type="number" id="poDownPayment" value="${d.downPayment||0}">
+  <div style="font-size:12px; color:var(--muted); margin-top:6px;">المتبقي بعد المقدمة: <b style="color:var(--text);">${money(remaining)}</b></div>
+
+  ${remaining>0? `
+  <div class="two-col" style="margin-top:10px;">
+    <div><label class="fl">عدد الأقساط</label><input class="field" type="number" min="1" id="poInstallmentsCount" value="${count}"></div>
+    <div><label class="fl">تاريخ أول قسط</label><input class="field" type="date" id="poFirstDueDate" value="${d.firstDueDate||''}"></div>
+  </div>
+  <div style="font-size:12px; color:var(--muted); margin-top:6px;">هيتوزعوا شهريًا بالتساوي (${money(perInstallment)} تقريبًا لكل قسط)</div>
+  ${scheduleHTML? `<div class="section-title" style="font-size:12.5px;">معاينة جدول الأقساط</div>${scheduleHTML}` : ''}
+  ` : (total>0? `<div style="font-size:12px; color:var(--accent2); margin-top:6px;">تم تغطية كامل المبلغ بالدفعة المقدمة، مفيش أقساط.</div>` : '')}
+
+  <button class="big-btn" id="btnSavePO" ${d.items.length===0? 'disabled':''}>💾 حفظ أمر الشراء</button>
+  `;
+}
+
+function savePurchaseOrder(){
+  const d = window._poDraft;
+  if(d.items.length===0){ toast('أضف صنف واحد على الأقل','err'); return; }
+  for(const it of d.items){
+    if(!it.productId || !it.color || !it.size || !it.qty || it.qty<=0){ toast('استكمل بيانات كل الأصناف (منتج/لون/مقاس/كمية)','err'); return; }
+  }
+  if(!d.supplierId){ toast('اختر مورد','err'); return; }
+  let newSupplierName = '';
+  let newSupplierPhone = '';
+  if(d.supplierId==='__new__'){
+    const elName = document.getElementById('poNewSupplierName');
+    const elPhone = document.getElementById('poNewSupplierPhone');
+    newSupplierName = ((elName? elName.value : d.newSupplierName)||'').trim();
+    newSupplierPhone = ((elPhone? elPhone.value : d.newSupplierPhone)||'').trim();
+    if(!newSupplierName){ toast('اكتب اسم المورد الجديد','err'); return; }
+  }
+
+  const total = d.items.reduce((s,it)=> s + it.qty*it.unitCost, 0);
+  const down = Math.min(Math.max(0, d.downPayment||0), total);
+  const remaining = Math.max(0, total - down);
+  const count = Math.max(1, d.installmentsCount||1);
+
+  if(remaining>0 && !d.firstDueDate){ toast('اختر تاريخ أول قسط','err'); return; }
+
+  let supplierId = d.supplierId;
+  if(supplierId==='__new__'){
+    const newSup = {id:uid('sup_'), name:newSupplierName, phone:newSupplierPhone, notes:'', status:'قيد التسجيل'};
+    DB.suppliers.push(newSup);
+    supplierId = newSup.id;
+  }
+
+  const poId = uid('po_');
+  const today = new Date().toISOString().slice(0,10);
+
+  DB.supplierLedger.push({id:uid('slt_'), supplierId, type:'invoice', amount:total, note:'أمر شراء '+poId, date:new Date().toISOString()});
+  if(down>0){
+    DB.supplierLedger.push({id:uid('slt_'), supplierId, type:'payment', amount:down, note:'دفعة مقدمة على أمر شراء '+poId, date:new Date().toISOString()});
+  }
+  const installmentIds = [];
+  if(remaining>0){
+    const perRounded = Math.round((remaining/count)*100)/100;
+    const base = new Date(d.firstDueDate);
+    for(let i=0;i<count;i++){
+      const dt = new Date(base); dt.setMonth(dt.getMonth()+i);
+      const instId = uid('sin_');
+      const amt = i===count-1? Math.round((remaining - perRounded*(count-1))*100)/100 : perRounded;
+      DB.supplierInstallments.push({id:instId, supplierId, amount:amt, dueDate:dt.toISOString().slice(0,10), note:'قسط أمر شراء '+poId, paid:false});
+      installmentIds.push(instId);
+    }
+  }
+
+  DB.purchaseOrders.push({
+    id:poId, supplierId, date:today,
+    items: d.items.map(it=>({productId:it.productId, name:(DB.products.find(p=>p.id===it.productId)||{}).name||'', size:it.size, color:it.color, qty:it.qty, unitCost:it.unitCost})),
+    totalAmount:total, downPayment:down, remainingAmount:remaining,
+    installmentIds, stockReceived:false
+  });
+
+  saveDB(); toast('تم حفظ أمر الشراء ✓','ok'); closeSheet();
+  resetPODraft();
+  window._supDist.tab = 'purchaseOrders';
+  render();
+}
+
+function viewPurchaseOrderHTML(poid){
+  const po = DB.purchaseOrders.find(x=>x.id===poid); if(!po) return '';
+  const s = DB.suppliers.find(x=>x.id===po.supplierId);
+  const itemsRows = po.items.map(it=>`<div class="list-row"><div><div class="main">${it.name||'منتج محذوف'}</div><div class="sub">مقاس ${it.size} · ${it.color} × ${it.qty}</div></div><div style="font-family:Cairo; font-weight:800;">${money(it.qty*it.unitCost)}</div></div>`).join('');
+  const installments = po.installmentIds.map(id=> DB.supplierInstallments.find(x=>x.id===id)).filter(Boolean);
+  const instRows = installments.map(i=>`<div class="list-row"><div class="sub">استحقاق ${new Date(i.dueDate).toLocaleDateString('ar-EG')}</div><div style="display:flex; gap:8px; align-items:center;"><span style="font-family:Cairo; font-weight:800;">${money(i.amount)}</span>${dueBadge(i.dueDate,i.paid)}${!i.paid?`<button class="mini-btn green" data-pay-installment="${i.id}">دفع</button>`:''}</div></div>`).join('');
+  return `
+  <h3 style="font-family:Cairo;">أمر شراء</h3>
+  <div class="sub">${s?s.name:'مورد محذوف'} · ${po.date}</div>
+  <div class="section-title">الأصناف</div>
+  ${itemsRows}
+  <div class="kpi accent" style="margin-top:10px;"><div class="l">الإجمالي</div><div class="v">${money(po.totalAmount)}</div></div>
+  <div class="two-col" style="margin-top:8px;">
+    <div class="kpi green"><div class="l">الدفعة المقدمة</div><div class="v">${money(po.downPayment)}</div></div>
+    <div class="kpi danger"><div class="l">المتبقي (أقساط)</div><div class="v">${money(po.remainingAmount)}</div></div>
+  </div>
+  ${instRows? `<div class="section-title">جدول الأقساط</div>${instRows}` : ''}
+  <div style="margin-top:14px;">${!po.stockReceived? `<button class="big-btn green" data-receive-po="${po.id}">📦 تأكيد الاستلام وإضافة للمخزون</button>` : `<div class="status-pill shipped" style="display:inline-block;">تم استلام البضاعة بالفعل</div>`}</div>
+  `;
+}
+function markPOReceived(poid){
+  const po = DB.purchaseOrders.find(x=>x.id===poid); if(!po) return;
+  if(po.stockReceived){ toast('تم استلام هذا الأمر من قبل','err'); return; }
+  po.items.forEach(it=> adjInv(it.productId, it.size, it.color, it.qty));
+  po.stockReceived = true;
+  saveDB(); closeSheet(); render(); toast('تم استلام البضاعة وإضافتها للمخزون ✓','ok');
+}
+function deletePurchaseOrder(poid){
+  const po = DB.purchaseOrders.find(x=>x.id===poid); if(!po) return;
+  if(!confirm('حذف أمر الشراء؟ هيتم حذف الفاتورة والدفعة والأقساط المرتبطة بيه من حساب المورد (استلام المخزون لو حصل مش هيتراجع أوتوماتيك).')) return;
+  DB.supplierLedger = DB.supplierLedger.filter(t=> !(t.note && t.note.indexOf(po.id) > -1));
+  DB.supplierInstallments = DB.supplierInstallments.filter(i=> po.installmentIds.indexOf(i.id) === -1);
+  DB.purchaseOrders = DB.purchaseOrders.filter(x=>x.id!==poid);
+  saveDB(); render(); toast('تم حذف أمر الشراء','ok');
 }
 
 /* ----- الموزعين ----- */
@@ -2315,6 +2587,8 @@ function deleteDistributorTx(tid){
 /* ================= ADMIN EXPENSES ================= */
 function renderAdminExpenses(){
   const month = computeFinance(d=> d.slice(0,7)===monthStr());
+  const cfToday = computeCashFlow(d=> d.slice(0,10)===todayStr());
+  const cfMonth = computeCashFlow(d=> d.slice(0,7)===monthStr());
   const expenses = [...DB.expenses].sort((a,b)=> new Date(b.date)-new Date(a.date));
   return `${adminTabsHTML('admin-expenses')}
   <div class="section-title">المصاريف وصافي الربح</div>
@@ -2324,7 +2598,30 @@ function renderAdminExpenses(){
     <div class="kpi danger"><div class="l">مصاريف الشهر</div><div class="v">${money(month.expenses)}</div></div>
     <div class="kpi green"><div class="l">صافي الربح</div><div class="v">${money(month.profit)}</div></div>
   </div>
-  <div class="section-title">إضافة مصروف</div>
+  <div style="font-size:11px; color:var(--muted); margin-top:6px;">صافي الربح بيتحسب محاسبيًا (تكلفة البضاعة بتتخصم وقت البيع مش وقت الدفع للمورد)، عشان كده مش هتلاقي "المدفوع للموردين" هنا — تحته في قسم التدفق النقدي.</div>
+
+  <div class="section-title" style="margin-top:22px;">💵 التدفق النقدي (Cash Flow)</div>
+  <div style="font-size:11.5px; color:var(--muted); margin-bottom:8px;">فلوس داخلة وخارجة فعليًا من كاش المحل — منفصل تمامًا عن حساب الربح فوق، ومفيدة عشان تعرف فين رايحة فلوسك.</div>
+
+  <div style="font-weight:700; font-size:12.5px; margin-top:10px;">اليوم</div>
+  <div class="kpi-grid">
+    <div class="kpi green"><div class="l">داخل (مبيعات+تحصيل)</div><div class="v">${money(cfToday.cashIn)}</div></div>
+    <div class="kpi danger"><div class="l">خارج (مصاريف+موردين)</div><div class="v">${money(cfToday.cashOut)}</div></div>
+    <div class="kpi ${cfToday.net>=0?'green':'danger'}"><div class="l">الصافي</div><div class="v">${money(cfToday.net)}</div></div>
+  </div>
+
+  <div style="font-weight:700; font-size:12.5px; margin-top:14px;">الشهر</div>
+  <div class="kpi-grid">
+    <div class="kpi"><div class="l">مبيعات</div><div class="v">${money(cfMonth.revenue)}</div></div>
+    <div class="kpi"><div class="l">تحصيل من موزعين</div><div class="v">${money(cfMonth.distributorCollections)}</div></div>
+    <div class="kpi"><div class="l">مصاريف عامة</div><div class="v">${money(cfMonth.expensesTotal)}</div></div>
+    <div class="kpi"><div class="l">مدفوع لموردين</div><div class="v">${money(cfMonth.supplierPayments)}</div></div>
+    <div class="kpi green"><div class="l">إجمالي الداخل</div><div class="v">${money(cfMonth.cashIn)}</div></div>
+    <div class="kpi danger"><div class="l">إجمالي الخارج</div><div class="v">${money(cfMonth.cashOut)}</div></div>
+    <div class="kpi ${cfMonth.net>=0?'green':'danger'}"><div class="l">صافي التدفق النقدي</div><div class="v">${money(cfMonth.net)}</div></div>
+  </div>
+
+  <div class="section-title" style="margin-top:22px;">إضافة مصروف</div>
   <div class="two-col">
     <div><label class="fl">النوع</label>
       <select class="field" id="exType">
@@ -3249,6 +3546,8 @@ function bindDynamic(){
   c.querySelectorAll('[data-pin]').forEach(el=> el.addEventListener('click', ()=> pinPress(el.dataset.pin)));
   const btnLogoutAdmin = document.getElementById('btnLogoutAdmin');
   if(btnLogoutAdmin) btnLogoutAdmin.addEventListener('click', ()=>{ DB.adminAuthed=false; saveDB(); setNav('shop'); });
+  const btnRefreshData = document.getElementById('btnRefreshData');
+  if(btnRefreshData) btnRefreshData.addEventListener('click', ()=> manualRefreshData(btnRefreshData));
 
   // dashboard
   const btnExportExcel = document.getElementById('btnExportExcel');
@@ -3334,6 +3633,11 @@ function bindDynamic(){
   c.querySelectorAll('[data-open-distributor]').forEach(el=> el.addEventListener('click', ()=> openDistributorLedger(el.dataset.openDistributor)));
   c.querySelectorAll('[data-del-distributor]').forEach(el=> el.addEventListener('click', ()=> deleteDistributor(el.dataset.delDistributor)));
   c.querySelectorAll('[data-pay-installment]').forEach(el=> el.addEventListener('click', ()=> payInstallment(el.dataset.payInstallment)));
+  const btnNewPO = document.getElementById('btnNewPO');
+  if(btnNewPO) btnNewPO.addEventListener('click', openNewPurchaseOrder);
+  c.querySelectorAll('[data-receive-po]').forEach(el=> el.addEventListener('click', ()=> markPOReceived(el.dataset.receivePo)));
+  c.querySelectorAll('[data-view-po]').forEach(el=> el.addEventListener('click', ()=> openSheet(viewPurchaseOrderHTML(el.dataset.viewPo))));
+  c.querySelectorAll('[data-del-po]').forEach(el=> el.addEventListener('click', ()=> deletePurchaseOrder(el.dataset.delPo)));
 
   // expenses
   const btnAddExpense = document.getElementById('btnAddExpense');
@@ -3397,6 +3701,47 @@ function bindSheetDynamic(){
     setInv(pid,sz,cl, Math.max(0, Number(el.value)||0));
     saveDB(); toast('تم تحديث الكمية ✓','ok');
   }));
+  const poSupplier = sheet.querySelector('#poSupplier');
+  if(poSupplier) poSupplier.addEventListener('change', ()=>{ window._poDraft.supplierId = poSupplier.value; openSheet(purchaseOrderFormHTML()); });
+  const poNewSupplierName = sheet.querySelector('#poNewSupplierName');
+  if(poNewSupplierName) poNewSupplierName.addEventListener('change', ()=>{ window._poDraft.newSupplierName = poNewSupplierName.value; });
+  const poNewSupplierPhone = sheet.querySelector('#poNewSupplierPhone');
+  if(poNewSupplierPhone) poNewSupplierPhone.addEventListener('change', ()=>{ window._poDraft.newSupplierPhone = poNewSupplierPhone.value; });
+  const btnAddPOItem = sheet.querySelector('#btnAddPOItem');
+  if(btnAddPOItem) btnAddPOItem.addEventListener('click', ()=>{ window._poDraft.items.push({productId:'', color:'', size:'', qty:1, unitCost:0}); openSheet(purchaseOrderFormHTML()); });
+  sheet.querySelectorAll('[data-remove-po-item]').forEach(el=> el.addEventListener('click', ()=>{
+    window._poDraft.items.splice(Number(el.dataset.removePoItem),1);
+    openSheet(purchaseOrderFormHTML());
+  }));
+  sheet.querySelectorAll('[data-po-item-field]').forEach(el=>{
+    el.addEventListener('change', ()=>{
+      const idx = Number(el.dataset.idx);
+      const field = el.dataset.poItemField;
+      const item = window._poDraft.items[idx];
+      if(!item) return;
+      if(field==='productId'){
+        item.productId = el.value;
+        const p = DB.products.find(x=>x.id===el.value);
+        item.color = p? (p.colors[0]||'') : '';
+        item.size = p? (p.sizes[0]||'') : '';
+        item.unitCost = p? (p.cost||0) : 0;
+        item.qty = item.qty || 1;
+      } else if(field==='qty'){ item.qty = Math.max(1, Number(el.value)||1); }
+      else if(field==='unitCost'){ item.unitCost = Number(el.value)||0; }
+      else { item[field] = el.value; }
+      openSheet(purchaseOrderFormHTML());
+    });
+  });
+  const poDownPayment = sheet.querySelector('#poDownPayment');
+  if(poDownPayment) poDownPayment.addEventListener('change', ()=>{ window._poDraft.downPayment = Number(poDownPayment.value)||0; openSheet(purchaseOrderFormHTML()); });
+  const poInstallmentsCount = sheet.querySelector('#poInstallmentsCount');
+  if(poInstallmentsCount) poInstallmentsCount.addEventListener('change', ()=>{ window._poDraft.installmentsCount = Math.max(1, Number(poInstallmentsCount.value)||1); openSheet(purchaseOrderFormHTML()); });
+  const poFirstDueDate = sheet.querySelector('#poFirstDueDate');
+  if(poFirstDueDate) poFirstDueDate.addEventListener('change', ()=>{ window._poDraft.firstDueDate = poFirstDueDate.value; openSheet(purchaseOrderFormHTML()); });
+  const btnSavePO = sheet.querySelector('#btnSavePO');
+  if(btnSavePO) btnSavePO.addEventListener('click', savePurchaseOrder);
+  sheet.querySelectorAll('[data-receive-po]').forEach(el=> el.addEventListener('click', ()=> markPOReceived(el.dataset.receivePo)));
+
   const btnSaveSupplier = sheet.querySelector('#btnSaveSupplier');
   if(btnSaveSupplier) btnSaveSupplier.addEventListener('click', ()=> saveSupplier(btnSaveSupplier.dataset.sid || null));
   const btnAddSupplierTx = sheet.querySelector('#btnAddSupplierTx');
