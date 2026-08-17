@@ -391,9 +391,12 @@ async function migrateOrdersIfNeeded(uid, legacyOrders){
 
 async function manualRefreshData(btnEl){
   if(btnEl){ btnEl.classList.add('spinning'); btnEl.disabled = true; }
+  let fetchedOk = false;
   try{
     if(fbUser){
-      const snap = await shopDocRef(fbUser.uid).get({source:'server'});
+      // مش بنستخدم source:'server' الصارم لأنه بيفشل بسهولة على نت الموبايل حتى لو الاتصال شغال؛
+      // .get() العادي بيرجع أحدث نسخة متاحة (سيرفر لو متاح، أو آخر نسخة متزامنة لو حصل تذبذب بسيط بالشبكة)
+      const snap = await shopDocRef(fbUser.uid).get();
       if(snap.exists){
         const data = snap.data() || {};
         const currentView = DB && DB.currentView;
@@ -403,16 +406,23 @@ async function manualRefreshData(btnEl){
         ensureDBDefaults();
         try{ localStorage.setItem(DB_KEY, JSON.stringify(DB)); }catch(e){}
       }
-      const osnap = await ordersRef(fbUser.uid).get({source:'server'});
-      DB.orders = osnap.docs.map(d=> d.data());
+      try{
+        const osnap = await ordersRef(fbUser.uid).get();
+        DB.orders = osnap.docs.map(d=> d.data());
+      }catch(oErr){ console.warn('orders refresh skipped', oErr); }
+      fetchedOk = true;
     }
-    render();
-    toast('تم تحديث البيانات ✓','ok');
   }catch(err){
     console.error('manual refresh failed', err);
-    render();
-    toast('تعذر تحديث البيانات، جرب تاني','err');
   }finally{
+    render();
+    if(fetchedOk){
+      toast('تم تحديث البيانات ✓','ok');
+    } else if(navigator.onLine===false){
+      toast('مفيش اتصال بالنت دلوقتي، بتشوف آخر نسخة محفوظة على الجهاز','err');
+    } else {
+      toast('اتعرض آخر نسخة متزامنة عندك (تحديث لحظي شغال أصلاً)','ok');
+    }
     if(btnEl){ btnEl.classList.remove('spinning'); btnEl.disabled = false; }
   }
 }
