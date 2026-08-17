@@ -502,8 +502,16 @@ let _allShopsLoading = false;
 function fetchAllShopsAndRender(){
   if(_allShopsLoading) return;
   _allShopsLoading = true;
-  fbStore.collection('shops').get().then(snap=>{
-    _allShopsCache = snap.docs.map(d=>({id:d.id, ...d.data()}));
+  fbStore.collection('shops').get().then(async snap=>{
+    const shops = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    // عدد الطلبات الحقيقي بقى متخزن في subcollection منفصل تحت كل محل، مش جوه db.orders
+    await Promise.all(shops.map(async s=>{
+      try{
+        const osnap = await fbStore.collection('shops').doc(s.id).collection('orders').get();
+        s._realOrdersCount = osnap.size;
+      }catch(e){ s._realOrdersCount = (s.db && s.db.orders ? s.db.orders.length : 0); }
+    }));
+    _allShopsCache = shops;
     _allShopsLoading = false;
     if(DB && DB.currentView==='admin-allshops'){ render(); }
   }).catch(err=>{
@@ -1295,7 +1303,7 @@ function renderAdminAllShops(){
     const settings = db.settings||{};
     const created = meta.createdAt && meta.createdAt.toDate ? meta.createdAt.toDate().toLocaleString('ar-EG') : '—';
     const productsCount = (db.products||[]).length;
-    const ordersCount = (db.orders||[]).length;
+    const ordersCount = (s._realOrdersCount!==undefined) ? s._realOrdersCount : (db.orders||[]).length;
     return `<div class="order-card">
       <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
         <b>${settings.shopName || 'بدون اسم'}</b>
