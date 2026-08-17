@@ -599,7 +599,8 @@ function renderLoginGate(mode){
     <div style="text-align:center;">
       <div style="font-size:38px;">👟</div>
       <h2 style="margin:8px 0 2px; font-family:Cairo;">تطبيق إدارة محل الأحذية</h2>
-      <div style="color:var(--muted); font-size:12.5px; margin-bottom:16px;">بياناتك محفوظة على السحابة ومتزامنة بين كل أجهزتك</div>
+      <div style="color:var(--muted); font-size:12.5px; margin-bottom:10px;">بياناتك محفوظة على السحابة ومتزامنة بين كل أجهزتك</div>
+      <button class="mini-btn" id="btnAppInfo" style="margin-bottom:14px;">ℹ️ شرح التطبيق ومميزاته</button>
     </div>
     <div style="display:flex; gap:8px; margin-bottom:14px;">
       <button class="mini-btn ${mode==='login'?'green':''}" id="tabLogin" style="flex:1;">دخول</button>
@@ -624,8 +625,40 @@ function renderLoginGate(mode){
     <div id="loginErrMsg" style="color:var(--danger); font-size:12.5px; margin-top:10px; text-align:center;"></div>
   </div>`;
 }
+function appInfoHTML(){
+  return `
+  <h3 style="font-family:Cairo; text-align:center;">👟 تطبيق إدارة محل الأحذية</h3>
+  <div style="font-size:12.5px; line-height:2; color:var(--text);">
+
+    <div class="section-title" style="margin-top:14px;">🛠️ مميزات التطبيق</div>
+    <div>• نقطة بيع (كاشير) سريعة بالباركود والمقاسات والألوان، مع فواتير قابلة للطباعة.</div>
+    <div>• إدارة مخزون دقيقة لكل موديل/مقاس/لون، مع تنبيه عند نقص الكمية.</div>
+    <div>• إدارة الموردين والموزعين مع كشف حساب (Ledger) وأوامر شراء وتقسيط.</div>
+    <div>• متابعة المصاريف، التدفق النقدي، وصافي الربح الفعلي أول بأول.</div>
+    <div>• فواتير متوافقة مع متطلبات الفاتورة الإلكترونية المصرية.</div>
+    <div>• صلاحيات مستخدمين وسجل نشاط (Audit Log) لو عندك أكتر من موظف.</div>
+    <div>• كل بياناتك متزامنة لحظيًا على كل أجهزتك (موبايل/تابلت/كمبيوتر).</div>
+
+    <div class="section-title" style="margin-top:16px;">🌐 إطلاق الكتالوج على النت وفيسبوك</div>
+    <div>• تقدر تصدّر "صفحة كتالوج عامة" لمنتجاتك برابط مستقل، ترفعها على أي استضافة، وتبعتها لعملائك يتصفحوا ويطلبوا مباشرة (والطلب يوصلك واتساب ويتسجل عندك في النظام أوتوماتيك).</div>
+    <div>• تقدر كمان تصدّر ملف "Product Feed" بمواصفات فيسبوك، وتربطه بصفحة محلك على فيسبوك (Meta Commerce Manager)، فمنتجاتك تظهر في تبويب "Shop" بصفحتك والعميل يطلب من غير ما يدخل التطبيق أصلًا.</div>
+    <div>• كل التصدير ده بضغطة زرار من إعدادات التطبيق، وتقدر تحدّثه أي وقت غيّرت أسعار أو منتجات.</div>
+
+    <div class="section-title" style="margin-top:16px;">🔒 حماية الخصوصية وسرية المعلومات</div>
+    <div>• بيانات كل محل معزولة تمامًا عن باقي المحلات — محدش يقدر يشوف أو يوصل لبياناتك غيرك إنت بحسابك الخاص.</div>
+    <div>• الدخول محمي بكلمة سر مشفّرة عن طريق نظام مصادقة Firebase المعتمد من Google، ومفيش وصول لأي بيانات من غير تسجيل دخول صحيح.</div>
+    <div>• كل الاتصال بين التطبيق وقاعدة البيانات مشفّر (HTTPS)، وقواعد الوصول (Security Rules) بتمنع أي قراءة أو كتابة غير مصرح بيها حتى لو حد عرف رابط قاعدة البيانات.</div>
+    <div>• التطبيق مش بيشارك أو يبيع بيانات محلك أو عملائك لأي جهة تالتة.</div>
+  </div>
+  `;
+}
+function bindAppInfoButton(){
+  const btn = document.getElementById('btnAppInfo');
+  if(btn) btn.addEventListener('click', ()=> openSheet(appInfoHTML()));
+}
 function bindLoginGate(mode){
   const c = document.getElementById('mainContainer');
+  bindAppInfoButton();
   const errBox = ()=> c.querySelector('#loginErrMsg');
   const setErr = msg=>{ const b=errBox(); if(b) b.textContent = msg||''; };
   const btnTabLogin = c.querySelector('#tabLogin');
@@ -741,6 +774,7 @@ function bindSetupWizard(){
 
 function ensureDBDefaults(){
   if(!DB.settings) DB.settings = {adminPin:'1234', shopName:'كوتشي هاوس', whatsapp:'201120001343', lowStockThreshold:2};
+  if(DB.settings.publicCatalogUrl===undefined) DB.settings.publicCatalogUrl = '';
   if(!DB.settings.taxNumber) DB.settings.taxNumber = '';
   if(!DB.settings.commercialRegister) DB.settings.commercialRegister = '';
   if(!DB.settings.shopAddress) DB.settings.shopAddress = '';
@@ -2806,6 +2840,16 @@ function renderAdminSettings(){
     </div>
   </div>
 
+  <div class="section-title" style="margin-top:24px;">📘 معرض المنتجات على فيسبوك (Product Feed)</div>
+  <div style="background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px; font-size:12.5px; line-height:1.9;">
+    <div>ملف بيحتوي كل منتجاتك بالمواصفات اللي فيسبوك محتاجها، بترفعه على Meta Commerce Manager عشان تظهر منتجاتك في تبويب "Shop" بصفحتك، والعميل يطلب عن طريق "راسلنا".</div>
+    <label class="fl" style="margin-top:8px;">رابط صفحة الكتالوج العام (بعد رفعها على الاستضافة)</label>
+    <input class="field" id="stPublicCatalogUrl" placeholder="https://amrghanem2023.github.io/shop/catalog-xxx.html" value="${escapeXml(s.publicCatalogUrl||'')}">
+    <div style="color:var(--muted); margin-top:4px;">لازم ترفع صفحة الكتالوج (بالزرار فوق) وتحفظ رابطها هنا الأول، عشان روابط المنتجات في ملف الفيسبوك تشتغل صح.</div>
+    <button class="big-btn sm" id="btnExportFbFeed" style="margin-top:10px;">📤 تصدير Product Feed (XML)</button>
+    <div style="color:var(--muted); margin-top:8px;">بعد التنزيل: افتح <span style="direction:ltr; display:inline-block;">business.facebook.com/commerce_manager</span> ← أضف كتالوج جديد ← "رفع ملف بيانات" ← ارفع ملف الـ XML ده (أو حطّه على رابط ثابت واستخدم "جدولة تلقائية" عشان يتحدّث لوحده). لازم تعيد التصدير والرفع كل ما تحدّث منتجاتك أو أسعارك.</div>
+  </div>
+
   <div class="section-title" style="margin-top:24px; color:var(--danger);">⚠️ منطقة خطر</div>
   <div style="background:#fdecea; border:1px solid var(--danger); border-radius:12px; padding:12px; font-size:12.5px;">
     <div style="font-weight:700; margin-bottom:6px;">مسح كل بيانات المحل نهائيًا</div>
@@ -2826,6 +2870,8 @@ function saveAdminSettings(){
   s.lowStockThreshold = Math.max(0, Number(document.getElementById('stLowStock').value)||0);
   s.pricesIncludeVat = document.getElementById('stPricesIncludeVat').checked;
   s.invoiceSeq = Math.max(1, Number(document.getElementById('stInvoiceSeq').value)||1);
+  const fbUrlEl = document.getElementById('stPublicCatalogUrl');
+  if(fbUrlEl) s.publicCatalogUrl = fbUrlEl.value.trim();
   saveDB(); toast('تم حفظ الإعدادات ✓','ok'); render();
 }
 /* ================= مسح كل بيانات المحل نهائيًا ================= */
@@ -3059,7 +3105,7 @@ function renderProducts(){
   list.forEach(function(p){
     var stock = productTotalStock(p);
     var img = (p.images && p.images[0]) || '';
-    html += '<div class="pcard" data-pid="' + esc(p.id) + '">' +
+    html += '<div class="pcard" id="p-' + esc(p.id) + '" data-pid="' + esc(p.id) + '">' +
       '<img src="' + esc(img) + '" loading="lazy">' +
       '<div class="body">' +
         '<div class="name">' + esc(p.name) + '</div>' +
@@ -3333,6 +3379,14 @@ document.getElementById('brandName').textContent = DATA.shopName || 'المتج�
 document.getElementById('brandLogo').textContent = DATA.shopLogo || '👟';
 document.title = DATA.shopName || 'المتجر';
 renderProducts();
+if(location.hash && location.hash.indexOf('#p-')===0){
+  var targetPid = location.hash.slice(3);
+  setTimeout(function(){
+    var el = document.getElementById('p-' + targetPid);
+    if(el) el.scrollIntoView({block:'center'});
+    if(targetPid) openProduct(targetPid);
+  }, 150);
+}
 <\/script>
 </body>
 </html>
@@ -3350,6 +3404,53 @@ function buildCatalogData(){
   };
 }
 function catalogFilenameSafe(s){ return (s||'').replace(/[^a-zA-Z0-9\u0600-\u06FF_-]+/g,'_').slice(0,40) || 'catalog'; }
+function productTotalStockMain(p){
+  return DB.inventory.filter(i=>i.productId===p.id).reduce((sum,i)=> sum + (Number(i.qty)||0), 0);
+}
+function buildFacebookFeedXml(){
+  const baseUrl = (DB.settings.publicCatalogUrl||'').trim();
+  const shopName = escapeXml(DB.settings.shopName || 'المتجر');
+  const items = DB.products.map(p=>{
+    const stock = productTotalStockMain(p);
+    const link = baseUrl ? (baseUrl + '#p-' + encodeURIComponent(p.id)) : '';
+    const images = (p.images||[]).filter(Boolean);
+    const mainImage = images[0] || '';
+    const extraImages = images.slice(1,10).map(img=>`<g:additional_image_link>${escapeXml(img)}</g:additional_image_link>`).join('\n      ');
+    const priceNum = (Math.round((Number(p.price)||0)*100)/100).toFixed(2);
+    return `    <item>
+      <g:id>${escapeXml(p.id)}</g:id>
+      <g:title>${escapeXml(p.name||'منتج')}</g:title>
+      <g:description>${escapeXml((p.brand? p.brand+' - ':'') + (p.material||p.name||'منتج'))}</g:description>
+      <g:link>${escapeXml(link)}</g:link>
+      <g:image_link>${escapeXml(mainImage)}</g:image_link>
+      ${extraImages}
+      <g:availability>${stock>0?'in stock':'out of stock'}</g:availability>
+      <g:price>${priceNum} EGP</g:price>
+      <g:brand>${escapeXml(p.brand || shopName)}</g:brand>
+      <g:condition>new</g:condition>
+    </item>`;
+  }).join('\n');
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:g="http://base.google.com/ns/1.0">
+  <channel>
+    <title>${shopName}</title>
+    <link>${escapeXml(baseUrl||'')}</link>
+    <description>كتالوج منتجات ${shopName}</description>
+${items}
+  </channel>
+</rss>`;
+}
+function downloadFacebookFeed(){
+  if(!DB.products || DB.products.length===0){ toast('لا توجد منتجات لتصديرها بعد','err'); return; }
+  if(!(DB.settings.publicCatalogUrl||'').trim()){ toast('حط رابط صفحة الكتالوج العام في الخانة فوق واحفظ الإعدادات الأول','err'); return; }
+  const xml = buildFacebookFeedXml();
+  const blob = new Blob([xml], {type:'application/xml'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'facebook-feed-' + catalogFilenameSafe(DB.settings.shopName) + '.xml';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  toast('تم تنزيل ملف الفيسبوك ✓ ارفعه في Meta Commerce Manager','ok');
+}
 function downloadPublicCatalog(){
   if(!fbUser){ toast('لازم تكون مسجل دخول أول','err'); return; }
   if(!DB.products || DB.products.length===0){ toast('لا توجد منتجات لتصديرها بعد','err'); return; }
@@ -3661,6 +3762,8 @@ function bindDynamic(){
   const btnSaveSettings = document.getElementById('btnSaveSettings');
   const btnDownloadCatalog = document.getElementById('btnDownloadCatalog');
   if(btnDownloadCatalog) btnDownloadCatalog.addEventListener('click', downloadPublicCatalog);
+  const btnExportFbFeed = document.getElementById('btnExportFbFeed');
+  if(btnExportFbFeed) btnExportFbFeed.addEventListener('click', downloadFacebookFeed);
   if(btnSaveSettings) btnSaveSettings.addEventListener('click', saveAdminSettings);
   const btnOpenActivateSettings = document.getElementById('btnOpenActivateSettings');
   if(btnOpenActivateSettings) btnOpenActivateSettings.addEventListener('click', ()=> openSheet(activationSheetHTML()));
