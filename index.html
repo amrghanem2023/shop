@@ -158,6 +158,8 @@ label.fl{font-size:12px; color:var(--muted); font-weight:700; margin-top:12px; d
 
 /* admin */
 .admin-tabs{display:flex; flex-wrap:wrap; gap:7px; padding-bottom:2px;}
+.admin-actions{display:flex; justify-content:space-between; gap:8px; margin-top:8px;}
+.admin-actions .atab{flex:1; text-align:center;}
 .atab{flex:none; background:var(--panel); border:1px solid var(--line); color:var(--text-on-ink); font-size:12px; padding:8px 13px; border-radius:11px; font-weight:700;}
 .atab.active{background:var(--accent); border-color:var(--accent); color:#fff;}
 .atab#btnRefreshData{background:var(--accent2); border-color:var(--accent2); color:#fff;}
@@ -180,6 +182,14 @@ label.fl{font-size:12px; color:var(--muted); font-weight:700; margin-top:12px; d
 .mini-btn{background:var(--ink); border:1px solid var(--line); color:var(--text-on-ink); padding:6px 10px; border-radius:8px; font-size:11.5px;}
 .mini-btn.danger{color:var(--danger); border-color:rgba(225,75,75,.4);}
 .mini-btn.green{color:var(--accent2); border-color:rgba(47,167,102,.4);}
+.an-rank{display:flex; align-items:center; justify-content:center; width:24px; height:24px; border-radius:50%; font-size:11px; font-weight:800; flex:none; font-family:'Cairo';}
+.an-rank.opp{background:rgba(47,167,102,.18); color:var(--accent2);}
+.an-rank.thr{background:rgba(225,75,75,.18); color:var(--danger);}
+.an-bar-wrap{background:var(--ink); border-radius:6px; height:6px; margin-top:6px; overflow:hidden;}
+.an-bar{height:100%; border-radius:6px;}
+.an-bar.opp{background:var(--accent2);}
+.an-bar.thr{background:var(--danger);}
+.an-note{background:var(--panel); border:1px dashed var(--line); border-radius:12px; padding:10px 12px; font-size:11.5px; color:var(--muted); margin-bottom:12px;}
 .two-col{display:grid; grid-template-columns:1fr 1fr; gap:8px;}
 .size-matrix{display:grid; grid-template-columns:repeat(auto-fill,minmax(70px,1fr)); gap:8px; margin-top:8px;}
 .sm-cell{background:var(--ink); border:1px solid var(--line); border-radius:10px; padding:7px; text-align:center;}
@@ -1014,6 +1024,7 @@ function render(){
   else if(v==='admin-orders') c.innerHTML = renderAdminOrders();
   else if(v==='admin-expenses') c.innerHTML = renderAdminExpenses();
   else if(v==='admin-reports') c.innerHTML = renderAdminReports();
+  else if(v==='admin-analysis') c.innerHTML = renderAdminAnalysis();
   else if(v==='admin-returns') c.innerHTML = renderAdminReturns();
   else if(v==='admin-settings') c.innerHTML = renderAdminSettings();
   else if(v==='admin-allshops') c.innerHTML = renderAdminAllShops();
@@ -1280,13 +1291,16 @@ function pinPress(v){
 function adminTabsHTML(active){
   const tabs = [
     ['admin-dashboard','📊 لوحة التحكم'], ['admin-inventory','📦 المخزون'], ['admin-stocktake','📋 الجرد'], ['admin-pos','🧾 نقطة البيع'],
-    ['admin-orders','🚚 الطلبات'], ['admin-customers','👥 العملاء'], ['admin-suppliers','🤝 الموردين والموزعين'], ['admin-expenses','💰 المصاريف والأرباح'], ['admin-reports','📈 التقارير'], ['admin-returns','↩️ مرتجعات'], ['admin-settings','⚙️ إعدادات الفاتورة']
+    ['admin-orders','🚚 الطلبات'], ['admin-customers','👥 العملاء'], ['admin-suppliers','🤝 الموردين والموزعين'], ['admin-expenses','💰 المصاريف والأرباح'], ['admin-reports','📈 التقارير'], ['admin-analysis','🎯 تحليل المبيعات'], ['admin-returns','↩️ مرتجعات'], ['admin-settings','⚙️ إعدادات الفاتورة']
   ];
   if(isSuperAdmin()) tabs.push(['admin-allshops','🛡️ كل المحلات']);
-  return `<div class="tabbar-scroll"><div class="admin-tabs">${tabs.map(t=>`<button class="atab ${active===t[0]?'active':''}" data-nav-go="${t[0]}">${t[1]}</button>`).join('')}
-  <button class="atab" id="btnRefreshData" title="تحديث البيانات الآن"><span class="spin-ic">🔄</span> تحديث</button>
-  <button class="atab" style="background:var(--danger); border-color:var(--danger); color:#fff;" id="btnLogoutAdmin">خروج</button>
-  </div></div>`;
+  return `<div class="tabbar-scroll">
+  <div class="admin-tabs">${tabs.map(t=>`<button class="atab ${active===t[0]?'active':''}" data-nav-go="${t[0]}">${t[1]}</button>`).join('')}</div>
+  <div class="admin-actions">
+    <button class="atab" id="btnRefreshData" title="تحديث البيانات الآن"><span class="spin-ic">🔄</span> تحديث</button>
+    <button class="atab" style="background:var(--danger); border-color:var(--danger); color:#fff;" id="btnLogoutAdmin">خروج</button>
+  </div>
+  </div>`;
 }
 
 /* ================= SUPER ADMIN: كل المحلات ================= */
@@ -2879,6 +2893,141 @@ function bindAdminReportsButtons(c){
   });
 }
 
+/* ================= ADMIN ANALYSIS (تحليل المبيعات: فرص وتهديدات) ================= */
+function analysisData(from, to){
+  const inRange = d=> d.slice(0,10)>=from && d.slice(0,10)<=to;
+  const orders = DB.orders.filter(o=> inRange(o.date));
+  const returns = DB.returns.filter(r=> inRange(r.date));
+
+  // مبيعات لكل منتج
+  const prodStats = {};
+  orders.forEach(o=> o.items.forEach(i=>{
+    if(!prodStats[i.productId]) prodStats[i.productId] = {productId:i.productId, name:i.name, qty:0, revenue:0};
+    prodStats[i.productId].qty += i.qty;
+    prodStats[i.productId].revenue += i.price*i.qty;
+  }));
+  const maxQty = Math.max(1, ...Object.values(prodStats).map(s=>s.qty));
+  const topSelling = Object.values(prodStats).sort((a,b)=> b.qty-a.qty).slice(0,8)
+    .map(s=> ({...s, pct: Math.round(s.qty/maxQty*100)}));
+
+  // مرتجعات لكل منتج + نسبة الإرجاع من المباع
+  const retStats = {};
+  returns.forEach(r=>{
+    if(!retStats[r.productId]) retStats[r.productId] = {productId:r.productId, name:r.productName, qty:0};
+    retStats[r.productId].qty += r.qty;
+  });
+  const topReturns = Object.values(retStats).map(r=>{
+    const sold = (prodStats[r.productId]? prodStats[r.productId].qty:0) + r.qty; // إجمالي اللي خرج فعليًا قبل الإرجاع
+    const rate = sold>0 ? Math.round(r.qty/sold*100) : 100;
+    return {...r, sold, rate};
+  }).sort((a,b)=> b.qty-a.qty || b.rate-a.rate).slice(0,8);
+
+  // الأعلى ربحية
+  const profitStats = Object.values(prodStats).map(s=>{
+    const p = DB.products.find(pp=>pp.id===s.productId);
+    const cost = p? (p.cost||0):0;
+    const profit = s.revenue - cost*s.qty;
+    const margin = s.revenue>0 ? Math.round(profit/s.revenue*100) : 0;
+    return {...s, profit, margin};
+  }).sort((a,b)=> b.profit-a.profit).slice(0,6);
+
+  // بضاعة راكدة: موجودة بالمخزون لكن مبيعاتها ضعيفة/معدومة في الفترة
+  const stockMap = {};
+  DB.inventory.forEach(inv=>{ stockMap[inv.productId] = (stockMap[inv.productId]||0) + (inv.qty||0); });
+  const slowMovers = DB.products.filter(p=> (stockMap[p.id]||0) > 0).map(p=>{
+    const sold = prodStats[p.id]? prodStats[p.id].qty : 0;
+    return {productId:p.id, name:p.name, stock: stockMap[p.id]||0, sold};
+  }).sort((a,b)=> a.sold - b.sold || b.stock-a.stock).slice(0,6);
+
+  // المبيعات حسب الماركة
+  const brandMap = {};
+  orders.forEach(o=> o.items.forEach(i=>{
+    const p = DB.products.find(pp=>pp.id===i.productId);
+    const brand = (p&&p.brand) ? p.brand : 'غير مصنف';
+    brandMap[brand] = (brandMap[brand]||0) + i.price*i.qty;
+  }));
+  const maxBrand = Math.max(1, ...Object.values(brandMap));
+  const byBrand = Object.entries(brandMap).sort((a,b)=> b[1]-a[1]).slice(0,6).map(([name,val])=> ({name, val, pct: Math.round(val/maxBrand*100)}));
+
+  // أفضل العملاء
+  const custMap = {};
+  orders.forEach(o=>{
+    if(!custMap[o.customerId]) custMap[o.customerId] = {name:o.customerName, phone:o.customerPhone, total:0, count:0};
+    custMap[o.customerId].total += o.total; custMap[o.customerId].count += 1;
+  });
+  const topCustomers = Object.values(custMap).sort((a,b)=> b.total-a.total).slice(0,6);
+
+  const totalRevenue = orders.reduce((s,o)=>s+o.total,0);
+  const totalQtySold = Object.values(prodStats).reduce((s,x)=>s+x.qty,0);
+  const totalReturnsQty = returns.reduce((s,r)=>s+r.qty,0);
+  const returnRate = (totalQtySold+totalReturnsQty)>0 ? Math.round(totalReturnsQty/(totalQtySold+totalReturnsQty)*100) : 0;
+
+  return {topSelling, topReturns, profitStats, slowMovers, byBrand, topCustomers, totalRevenue, totalQtySold, totalReturnsQty, returnRate, ordersCount:orders.length};
+}
+function renderAdminAnalysis(){
+  window._an = window._an || {from: monthStr()+'-01', to: todayStr()};
+  const from = window._an.from, to = window._an.to;
+  const d = analysisData(from, to);
+
+  return `${adminTabsHTML('admin-analysis')}
+  <div class="section-title">🎯 تحليل المبيعات (الفرص والتهديدات)</div>
+  <div class="two-col">
+    <div><label class="fl">من تاريخ</label><input class="field" type="date" id="anFrom" value="${from}"></div>
+    <div><label class="fl">إلى تاريخ</label><input class="field" type="date" id="anTo" value="${to}"></div>
+  </div>
+  <div class="kpi-grid" style="margin-top:10px;">
+    <div class="kpi accent"><div class="l">إجمالي المبيعات</div><div class="v">${money(d.totalRevenue)}</div></div>
+    <div class="kpi"><div class="l">عدد الطلبات</div><div class="v">${d.ordersCount}</div></div>
+    <div class="kpi green"><div class="l">القطع المباعة</div><div class="v">${d.totalQtySold}</div></div>
+    <div class="kpi danger"><div class="l">نسبة الإرجاع</div><div class="v">${d.returnRate}%</div></div>
+  </div>
+
+  <div class="section-title">🚀 الفرص — الأكثر طلبًا</div>
+  ${d.topSelling.length===0? `<div class="an-note">لا توجد مبيعات كافية في الفترة المحددة لعرض الأكثر طلبًا</div>` :
+  d.topSelling.map((s,idx)=>`<div class="list-row" style="align-items:flex-start;">
+    <span class="an-rank opp">${idx+1}</span>
+    <div style="flex:1; margin-right:10px;">
+      <div class="main">${s.name}</div>
+      <div class="sub">بيع منه ${s.qty} قطعة · إيراد ${money(s.revenue)}</div>
+      <div class="an-bar-wrap"><div class="an-bar opp" style="width:${s.pct}%;"></div></div>
+    </div>
+  </div>`).join('')}
+
+  <div class="section-title">⚠️ التهديدات — الأكثر إرجاعًا</div>
+  ${d.topReturns.length===0? `<div class="an-note">لا توجد مرتجعات مسجلة في الفترة المحددة — مؤشر جيد ✅</div>` :
+  d.topReturns.map((r,idx)=>`<div class="list-row" style="align-items:flex-start;">
+    <span class="an-rank thr">${idx+1}</span>
+    <div style="flex:1; margin-right:10px;">
+      <div class="main">${r.name}</div>
+      <div class="sub">اترجع منه ${r.qty} قطعة من إجمالي ${r.sold} — نسبة إرجاع ${r.rate}%</div>
+      <div class="an-bar-wrap"><div class="an-bar thr" style="width:${Math.min(r.rate,100)}%;"></div></div>
+    </div>
+  </div>`).join('')}
+
+  <div class="section-title">💎 الأعلى ربحية</div>
+  ${d.profitStats.length===0? `<div class="an-note">لا توجد بيانات كافية</div>` :
+  d.profitStats.map(s=>`<div class="list-row"><div><div class="main">${s.name}</div><div class="sub">هامش ربح ${s.margin}% · بيع منه ${s.qty} قطعة</div></div><span style="font-family:Cairo; font-weight:800; color:var(--accent2);">${money(s.profit)}</span></div>`).join('')}
+
+  <div class="section-title">🐌 بضاعة راكدة (منخفضة المبيعات)</div>
+  ${d.slowMovers.length===0? `<div class="an-note">لا توجد بضاعة راكدة حاليًا</div>` :
+  d.slowMovers.map(s=>`<div class="list-row"><div><div class="main">${s.name}</div><div class="sub">متاح بالمخزون ${s.stock} قطعة</div></div><span class="status-pill ${s.sold===0?'cancelled':'prep'}">${s.sold===0? 'لم يُباع':'بيع '+s.sold+' فقط'}</span></div>`).join('')}
+
+  <div class="section-title">🏷️ المبيعات حسب الماركة</div>
+  ${d.byBrand.length===0? `<div class="an-note">لا توجد بيانات كافية</div>` :
+  d.byBrand.map(b=>`<div class="list-row" style="align-items:flex-start;"><div style="flex:1;"><div class="main">${b.name}</div><div class="an-bar-wrap"><div class="an-bar opp" style="width:${b.pct}%;"></div></div></div><span style="font-family:Cairo; font-weight:800; margin-right:10px;">${money(b.val)}</span></div>`).join('')}
+
+  <div class="section-title">👑 أفضل العملاء</div>
+  ${d.topCustomers.length===0? `<div class="an-note">لا توجد بيانات كافية</div>` :
+  d.topCustomers.map((c,idx)=>`<div class="list-row"><div><div class="main">${idx+1}. ${c.name}</div><div class="sub">${c.count} طلب · ${c.phone||''}</div></div><span style="font-family:Cairo; font-weight:800; color:var(--accent);">${money(c.total)}</span></div>`).join('')}
+  `;
+}
+function bindAdminAnalysisButtons(){
+  const anFrom = document.getElementById('anFrom');
+  if(anFrom) anFrom.addEventListener('change', ()=>{ window._an.from = anFrom.value; render(); });
+  const anTo = document.getElementById('anTo');
+  if(anTo) anTo.addEventListener('change', ()=>{ window._an.to = anTo.value; render(); });
+}
+
 function renderAdminReturns(){
   const returns = [...DB.returns].sort((a,b)=> new Date(b.date)-new Date(a.date));
   const recentOrders = [...DB.orders].sort((a,b)=> new Date(b.date)-new Date(a.date)).slice(0,30);
@@ -3829,6 +3978,7 @@ function bindDynamic(){
   const btnRefreshData = document.getElementById('btnRefreshData');
   if(btnRefreshData) btnRefreshData.addEventListener('click', ()=> manualRefreshData(btnRefreshData));
   bindAdminReportsButtons(c);
+  bindAdminAnalysisButtons();
 
   // dashboard
   const btnExportExcel = document.getElementById('btnExportExcel');
