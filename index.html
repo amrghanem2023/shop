@@ -438,7 +438,7 @@ function subscribeShop(uid){
       const initialDb = seedDB();
       shopDocRef(uid).set({
         db: initialDb,
-        meta: {shopCode, activated:false, ordersMigrated:true, trialStart: firebase.firestore.FieldValue.serverTimestamp(), createdAt: firebase.firestore.FieldValue.serverTimestamp()}
+        meta: {shopCode, email: (fbUser&&fbUser.email)||'', activated:false, ordersMigrated:true, trialStart: firebase.firestore.FieldValue.serverTimestamp(), createdAt: firebase.firestore.FieldValue.serverTimestamp()}
       }).catch(err=>{
         console.error('auto-create shop doc failed', err);
         toast('تعذر إنشاء بيانات المحل، جرب تحدّث الصفحة','err');
@@ -449,6 +449,10 @@ function subscribeShop(uid){
     DB = data.db || seedDB();
     dbMeta = data.meta || {};
     ensureDBDefaults();
+    if(!dbMeta.email && fbUser && fbUser.email){
+      // تعبئة تلقائية للبريد الإلكتروني في محلات كانت اتعملت قبل ما نبدأ نخزّنه (مرة واحدة فقط)
+      shopDocRef(uid).set({meta:{email: fbUser.email}}, {merge:true}).catch(()=>{});
+    }
     try{ localStorage.setItem(DB_KEY, JSON.stringify(DB)); }catch(e){}
     DB.currentView = DB.currentView || localStorage.getItem(VIEW_KEY) || 'shop';
     setNav(DB.currentView);
@@ -699,7 +703,7 @@ function bindLoginGate(mode){
       initialDb.settings.setupDone = false;
       return shopDocRef(cred.user.uid).set({
         db: initialDb,
-        meta: {shopCode, activated:false, trialStart: firebase.firestore.FieldValue.serverTimestamp(), createdAt: firebase.firestore.FieldValue.serverTimestamp()}
+        meta: {shopCode, email: cred.user.email||email, activated:false, trialStart: firebase.firestore.FieldValue.serverTimestamp(), createdAt: firebase.firestore.FieldValue.serverTimestamp()}
       });
     }).catch(err=> setErr(loginErrorAr(err)));
   });
@@ -1009,6 +1013,7 @@ function render(){
   else if(v==='admin-suppliers') c.innerHTML = renderAdminSuppliers();
   else if(v==='admin-orders') c.innerHTML = renderAdminOrders();
   else if(v==='admin-expenses') c.innerHTML = renderAdminExpenses();
+  else if(v==='admin-reports') c.innerHTML = renderAdminReports();
   else if(v==='admin-returns') c.innerHTML = renderAdminReturns();
   else if(v==='admin-settings') c.innerHTML = renderAdminSettings();
   else if(v==='admin-allshops') c.innerHTML = renderAdminAllShops();
@@ -1275,7 +1280,7 @@ function pinPress(v){
 function adminTabsHTML(active){
   const tabs = [
     ['admin-dashboard','📊 لوحة التحكم'], ['admin-inventory','📦 المخزون'], ['admin-stocktake','📋 الجرد'], ['admin-pos','🧾 نقطة البيع'],
-    ['admin-orders','🚚 الطلبات'], ['admin-customers','👥 العملاء'], ['admin-suppliers','🤝 الموردين والموزعين'], ['admin-expenses','💰 المصاريف والأرباح'], ['admin-returns','↩️ مرتجعات'], ['admin-settings','⚙️ إعدادات الفاتورة']
+    ['admin-orders','🚚 الطلبات'], ['admin-customers','👥 العملاء'], ['admin-suppliers','🤝 الموردين والموزعين'], ['admin-expenses','💰 المصاريف والأرباح'], ['admin-reports','📈 التقارير'], ['admin-returns','↩️ مرتجعات'], ['admin-settings','⚙️ إعدادات الفاتورة']
   ];
   if(isSuperAdmin()) tabs.push(['admin-allshops','🛡️ كل المحلات']);
   return `<div class="tabbar-scroll"><div class="admin-tabs">${tabs.map(t=>`<button class="atab ${active===t[0]?'active':''}" data-nav-go="${t[0]}">${t[1]}</button>`).join('')}
@@ -1297,22 +1302,28 @@ function renderAdminAllShops(){
     return tb - ta;
   });
   const activatedCount = shops.filter(s=> s.meta && s.meta.activated).length;
+  let maxProducts = 0, maxProductsShop = '—', totalImages = 0;
   const rows = shops.map(s=>{
     const meta = s.meta||{};
     const db = s.db||{};
     const settings = db.settings||{};
     const created = meta.createdAt && meta.createdAt.toDate ? meta.createdAt.toDate().toLocaleString('ar-EG') : '—';
-    const productsCount = (db.products||[]).length;
+    const products = db.products||[];
+    const productsCount = products.length;
+    const imagesCount = products.reduce((sum,p)=> sum + ((p.images||[]).filter(Boolean).length), 0);
     const ordersCount = (s._realOrdersCount!==undefined) ? s._realOrdersCount : (db.orders||[]).length;
+    totalImages += imagesCount;
+    if(productsCount > maxProducts){ maxProducts = productsCount; maxProductsShop = settings.shopName || 'بدون اسم'; }
     return `<div class="order-card">
       <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
         <b>${settings.shopName || 'بدون اسم'}</b>
         <span class="tag" style="background:${meta.activated? 'var(--accent2)':'var(--danger)'}; color:#fff;">${meta.activated? 'مفعّل ✓':'تجريبي'}</span>
       </div>
       <div style="font-size:12px; color:var(--muted); margin-top:6px; line-height:1.9;">
+        البريد الإلكتروني: <span style="font-family:monospace; font-size:11px;">${meta.email||'غير متاح (اتسجل قبل تفعيل تخزين البريد)'}</span><br>
         كود المحل: <span style="font-family:monospace;">${meta.shopCode||'—'}</span><br>
         تاريخ الإنشاء: ${created}<br>
-        عدد المنتجات: ${productsCount} | عدد الطلبات: ${ordersCount}<br>
+        عدد المنتجات: ${productsCount} | عدد الصور: ${imagesCount} | عدد الطلبات: ${ordersCount}<br>
         UID: <span style="font-family:monospace; font-size:10.5px;">${s.id}</span>
       </div>
     </div>`;
@@ -1323,6 +1334,8 @@ function renderAdminAllShops(){
     <div class="kpi accent"><div class="l">إجمالي المحلات</div><div class="v">${shops.length}</div></div>
     <div class="kpi green"><div class="l">مفعّل</div><div class="v">${activatedCount}</div></div>
     <div class="kpi danger"><div class="l">تجريبي</div><div class="v">${shops.length-activatedCount}</div></div>
+    <div class="kpi accent"><div class="l">أكبر عدد أصناف بمحل</div><div class="v" style="font-size:15px;">${maxProducts} <span style="font-size:10px; color:var(--muted);">(${maxProductsShop})</span></div></div>
+    <div class="kpi accent"><div class="l">إجمالي الصور بكل المحلات</div><div class="v">${totalImages}</div></div>
   </div>
   <button class="big-btn ghost sm" id="btnRefreshAllShops">🔄 تحديث القائمة</button>
   <div style="margin-top:12px;">${rows}</div>`;
@@ -2638,6 +2651,7 @@ function deleteDistributorTx(tid){
 
 /* ================= ADMIN EXPENSES ================= */
 function renderAdminExpenses(){
+  if(!window._exImages) window._exImages = [];
   const month = computeFinance(d=> d.slice(0,7)===monthStr());
   const cfToday = computeCashFlow(d=> d.slice(0,10)===todayStr());
   const cfMonth = computeCashFlow(d=> d.slice(0,7)===monthStr());
@@ -2683,10 +2697,20 @@ function renderAdminExpenses(){
     <div><label class="fl">المبلغ</label><input class="field" type="number" id="exAmount"></div>
   </div>
   <label class="fl">ملاحظة</label><input class="field" id="exNote" placeholder="تفاصيل إضافية">
-  <button class="big-btn sm" id="btnAddExpense">+ إضافة المصروف</button>
+  <label class="fl">صورة الفاتورة (اختياري — التقط أو اسحب من المعرض، حتى 4 صور، بيتم ضغطها أوتوماتيك)</label>
+  <div id="exImagesPreview" class="opt-row" style="margin-top:6px;"></div>
+  <div style="display:flex; gap:8px; margin-top:8px;">
+    <label class="big-btn sm ghost" style="flex:1; text-align:center; margin-top:0;">📷 التقط صورة
+      <input type="file" accept="image/*" capture="environment" id="exCameraUpload" style="display:none;">
+    </label>
+    <label class="big-btn sm ghost" style="flex:1; text-align:center; margin-top:0;">🖼️ من المعرض
+      <input type="file" accept="image/*" multiple id="exGalleryUpload" style="display:none;">
+    </label>
+  </div>
+  <button class="big-btn sm" id="btnAddExpense" style="margin-top:10px;">+ إضافة المصروف</button>
   <div class="section-title">سجل المصاريف</div>
   ${expenses.length===0? `<div style="color:var(--muted); font-size:12.5px;">لا توجد مصاريف مسجلة</div>` :
-  expenses.map(e=>`<div class="list-row"><div><div class="main">${e.type}</div><div class="sub">${e.note||''} · ${new Date(e.date).toLocaleDateString('ar-EG')}</div></div><div style="display:flex;align-items:center;gap:8px;"><span style="font-family:Cairo;font-weight:800;color:var(--danger);">-${money(e.amount)}</span><button class="mini-btn" data-edit-expense="${e.id}">تعديل</button><button class="mini-btn danger" data-del-expense="${e.id}">حذف</button></div></div>`).join('')}
+  expenses.map(e=>`<div class="list-row"><div><div class="main">${e.type}${e.receiptImages&&e.receiptImages.length? ' 🧾':''}</div><div class="sub">${e.note||''} · ${new Date(e.date).toLocaleDateString('ar-EG')}</div></div><div style="display:flex;align-items:center;gap:8px;"><span style="font-family:Cairo;font-weight:800;color:var(--danger);">-${money(e.amount)}</span><button class="mini-btn" data-edit-expense="${e.id}">تعديل</button><button class="mini-btn danger" data-del-expense="${e.id}">حذف</button></div></div>`).join('')}
   `;
 }
 function expenseFormHTML(e){
@@ -2699,12 +2723,49 @@ function expenseFormHTML(e){
   <label class="fl">المبلغ</label><input class="field" type="number" id="exf_amount" value="${e.amount}">
   <label class="fl">ملاحظة</label><input class="field" id="exf_note" value="${e.note||''}">
   <label class="fl">التاريخ</label><input class="field" type="date" id="exf_date" value="${e.date}">
-  <button class="big-btn" id="btnSaveExpense" data-eid="${e.id}">💾 حفظ التعديل</button>
+  <label class="fl">صورة الفاتورة (حتى 4 صور — بيتم ضغطها أوتوماتيك)</label>
+  <div id="exEditImagesPreview" class="opt-row" style="margin-top:6px;"></div>
+  <div style="display:flex; gap:8px; margin-top:8px;">
+    <label class="big-btn sm ghost" style="flex:1; text-align:center; margin-top:0;">📷 التقط صورة
+      <input type="file" accept="image/*" capture="environment" id="exEditCameraUpload" style="display:none;">
+    </label>
+    <label class="big-btn sm ghost" style="flex:1; text-align:center; margin-top:0;">🖼️ من المعرض
+      <input type="file" accept="image/*" multiple id="exEditGalleryUpload" style="display:none;">
+    </label>
+  </div>
+  <button class="big-btn" id="btnSaveExpense" data-eid="${e.id}" style="margin-top:12px;">💾 حفظ التعديل</button>
   `;
 }
 function openExpenseForm(eid){
   const e = DB.expenses.find(x=>x.id===eid); if(!e) return;
+  window._exEditImages = (e.receiptImages||[]).slice();
   openSheet(expenseFormHTML(e));
+  renderExImagesPreview('exEditImagesPreview', window._exEditImages);
+}
+function renderExImagesPreview(containerId, arr){
+  const box = document.getElementById(containerId); if(!box) return;
+  box.innerHTML = arr.length ? arr.map((im,idx)=>`
+    <div style="position:relative;">
+      <img src="${im}" style="width:64px;height:64px;object-fit:cover;border-radius:9px; border:1px solid var(--line); cursor:pointer;" data-ex-img-view="${idx}" data-ex-img-container="${containerId}">
+      <button data-ex-img-del="${idx}" style="position:absolute; top:-6px; left:-6px; background:var(--danger); color:#fff; border:none; border-radius:50%; width:19px; height:19px; font-size:11px; line-height:1;">×</button>
+    </div>`).join('') : `<div style="font-size:11.5px; color:var(--muted);">لا توجد صور مرفقة</div>`;
+  box.querySelectorAll('[data-ex-img-del]').forEach(el=> el.addEventListener('click', ()=>{
+    arr.splice(Number(el.dataset.exImgDel),1);
+    renderExImagesPreview(containerId, arr);
+  }));
+  box.querySelectorAll('[data-ex-img-view]').forEach(el=> el.addEventListener('click', ()=>{
+    window.open(arr[Number(el.dataset.exImgView)], '_blank');
+  }));
+}
+async function handleExpenseImageFiles(fileList, containerId, arr){
+  const files = Array.from(fileList).slice(0, 4-arr.length);
+  if(files.length===0){ toast('أقصى عدد صور هو 4','err'); return; }
+  toast('جارٍ ضغط الصور...','');
+  for(const f of files){
+    try{ const dataUrl = await compressImageFile(f, 900, 0.68); arr.push(dataUrl); }
+    catch(err){ toast('تعذر تحميل إحدى الصور','err'); }
+  }
+  renderExImagesPreview(containerId, arr);
 }
 function saveExpense(eid){
   const e = DB.expenses.find(x=>x.id===eid); if(!e) return;
@@ -2713,11 +2774,111 @@ function saveExpense(eid){
   const note = document.getElementById('exf_note').value.trim();
   const date = document.getElementById('exf_date').value || e.date;
   if(amount<=0){ toast('من فضلك أدخل مبلغ صحيح','err'); return; }
-  Object.assign(e, {type, amount, note, date});
+  Object.assign(e, {type, amount, note, date, receiptImages: (window._exEditImages||[]).slice()});
   saveDB(); toast('تم حفظ التعديل ✓','ok'); closeSheet(); render();
 }
 
 /* ================= ADMIN RETURNS ================= */
+/* ================= ADMIN REPORTS (تقارير قابلة للطباعة) ================= */
+function expensesByType(scopeFn){
+  const map = {};
+  DB.expenses.filter(e=> scopeFn(e.date)).forEach(e=>{ map[e.type] = (map[e.type]||0) + e.amount; });
+  return Object.entries(map).sort((a,b)=> b[1]-a[1]);
+}
+function printReport(bodyHtml, title){
+  const area = document.getElementById('printArea');
+  const s = DB.settings;
+  area.innerHTML = `
+    <div class="inv-head"><div><b>${s.shopName}</b><br><small>${title}</small></div><div style="text-align:left;"><small>${new Date().toLocaleString('ar-EG')}</small></div></div>
+    ${bodyHtml}
+    <div style="text-align:center; margin-top:14px; font-size:11px;">تم إصدار هذا التقرير من نظام إدارة المحل</div>
+  `;
+  area.style.display='block';
+  setTimeout(()=>{ window.print(); area.style.display='none'; }, 150);
+}
+function renderAdminReports(){
+  window._rep = window._rep || {from: monthStr()+'-01', to: todayStr()};
+  const from = window._rep.from, to = window._rep.to;
+  const inRange = d=> d.slice(0,10)>=from && d.slice(0,10)<=to;
+  const fin = computeFinance(inRange);
+  const byType = expensesByType(inRange);
+  const stkRows = stocktakeRows().filter(r=>r.qty>0 || !window._rep.stkLowOnly).filter(r=> window._rep.stkLowOnly? r.qty<=DB.settings.lowStockThreshold : true);
+  const totalUnits = stkRows.reduce((s,r)=>s+r.qty,0);
+  const totalValue = stkRows.reduce((s,r)=>s+r.qty*(r.product.cost||0),0);
+
+  return `${adminTabsHTML('admin-reports')}
+  <div class="section-title">📈 تقرير الأرباح والمصروفات</div>
+  <div class="two-col">
+    <div><label class="fl">من تاريخ</label><input class="field" type="date" id="repFrom" value="${from}"></div>
+    <div><label class="fl">إلى تاريخ</label><input class="field" type="date" id="repTo" value="${to}"></div>
+  </div>
+  <div class="kpi-grid" style="margin-top:10px;">
+    <div class="kpi accent"><div class="l">الإيرادات</div><div class="v">${money(fin.revenue)}</div></div>
+    <div class="kpi"><div class="l">تكلفة البضاعة المباعة</div><div class="v">${money(fin.cogs)}</div></div>
+    <div class="kpi danger"><div class="l">إجمالي المصاريف</div><div class="v">${money(fin.expenses)}</div></div>
+    <div class="kpi green"><div class="l">صافي الربح</div><div class="v">${money(fin.profit)}</div></div>
+    <div class="kpi"><div class="l">عدد الطلبات</div><div class="v">${fin.count}</div></div>
+  </div>
+  <div style="font-weight:700; font-size:12.5px; margin-top:14px;">المصاريف حسب النوع</div>
+  ${byType.length===0? `<div style="color:var(--muted); font-size:12.5px;">لا توجد مصاريف في الفترة المحددة</div>` :
+    byType.map(([type,amt])=>`<div class="list-row"><div class="main">${type}</div><div style="font-family:Cairo; font-weight:800; color:var(--danger);">-${money(amt)}</div></div>`).join('')}
+  <button class="big-btn sm" id="btnPrintProfitReport" style="margin-top:12px;">🖨️ طباعة تقرير الأرباح والمصروفات</button>
+
+  <div class="section-title" style="margin-top:26px;">📋 تقرير جرد المخزون</div>
+  <label style="display:flex; align-items:center; gap:8px; font-size:12.5px; margin:6px 0 10px;">
+    <input type="checkbox" id="repStkLowOnly" ${window._rep.stkLowOnly?'checked':''} style="width:16px;height:16px;">
+    الأصناف المنخفضة فقط
+  </label>
+  <div class="kpi-grid">
+    <div class="kpi"><div class="l">إجمالي القطع</div><div class="v">${totalUnits}</div></div>
+    <div class="kpi"><div class="l">قيمة المخزون (تكلفة)</div><div class="v">${money(totalValue)}</div></div>
+    <div class="kpi"><div class="l">عدد المتغيرات</div><div class="v">${stkRows.length}</div></div>
+  </div>
+  <button class="big-btn sm" id="btnPrintInventoryReport" style="margin-top:12px;">🖨️ طباعة تقرير جرد المخزون</button>
+  `;
+}
+function bindAdminReportsButtons(c){
+  const repFrom = document.getElementById('repFrom');
+  if(repFrom) repFrom.addEventListener('change', ()=>{ window._rep.from = repFrom.value; render(); });
+  const repTo = document.getElementById('repTo');
+  if(repTo) repTo.addEventListener('change', ()=>{ window._rep.to = repTo.value; render(); });
+  const repStkLowOnly = document.getElementById('repStkLowOnly');
+  if(repStkLowOnly) repStkLowOnly.addEventListener('change', ()=>{ window._rep.stkLowOnly = repStkLowOnly.checked; render(); });
+  const btnPrintProfitReport = document.getElementById('btnPrintProfitReport');
+  if(btnPrintProfitReport) btnPrintProfitReport.addEventListener('click', ()=>{
+    const from = window._rep.from, to = window._rep.to;
+    const inRange = d=> d.slice(0,10)>=from && d.slice(0,10)<=to;
+    const fin = computeFinance(inRange);
+    const byType = expensesByType(inRange);
+    const body = `
+      <div style="margin-bottom:8px; font-size:13px;">الفترة من ${from} إلى ${to}</div>
+      <div class="inv-row" style="font-weight:800; border-bottom:2px solid #000;"><span>البند</span><span>القيمة</span></div>
+      <div class="inv-row"><span>الإيرادات</span><span>${money(fin.revenue)}</span></div>
+      <div class="inv-row"><span>تكلفة البضاعة المباعة</span><span>${money(fin.cogs)}</span></div>
+      <div class="inv-row"><span>إجمالي المصاريف</span><span>${money(fin.expenses)}</span></div>
+      <div class="inv-row" style="font-weight:800; border-top:2px dashed #000; margin-top:6px; font-size:15px;"><span>صافي الربح</span><span>${money(fin.profit)}</span></div>
+      <div style="margin-top:14px; font-weight:800;">تفصيل المصاريف حسب النوع</div>
+      ${byType.map(([type,amt])=>`<div class="inv-row"><span>${type}</span><span>${money(amt)}</span></div>`).join('') || '<div style="font-size:12.5px; color:#666;">لا توجد مصاريف</div>'}
+    `;
+    printReport(body, 'تقرير الأرباح والمصروفات');
+  });
+  const btnPrintInventoryReport = document.getElementById('btnPrintInventoryReport');
+  if(btnPrintInventoryReport) btnPrintInventoryReport.addEventListener('click', ()=>{
+    let rows = stocktakeRows();
+    if(window._rep.stkLowOnly) rows = rows.filter(r=> r.qty<=DB.settings.lowStockThreshold);
+    rows.sort((a,b)=> a.product.name.localeCompare(b.product.name,'ar') || a.size.localeCompare(b.size));
+    const totalUnits = rows.reduce((s,r)=>s+r.qty,0);
+    const totalValue = rows.reduce((s,r)=>s+r.qty*(r.product.cost||0),0);
+    const body = `
+      <div style="margin-bottom:8px; font-size:13px;">تاريخ الجرد: ${new Date().toLocaleDateString('ar-EG')}${window._rep.stkLowOnly?' — الأصناف المنخفضة فقط':''}</div>
+      <div class="inv-row" style="font-weight:800; border-bottom:2px solid #000;"><span>الصنف</span><span>الكمية / القيمة</span></div>
+      ${rows.map(r=>`<div class="inv-row"><span>${r.product.name} (${r.size}/${r.color})</span><span>×${r.qty} = ${money(r.qty*(r.product.cost||0))}</span></div>`).join('') || '<div style="font-size:12.5px; color:#666;">لا توجد أصناف</div>'}
+      <div class="inv-row" style="font-weight:800; border-top:2px dashed #000; margin-top:6px; font-size:15px;"><span>الإجمالي: ${totalUnits} قطعة</span><span>${money(totalValue)}</span></div>
+    `;
+    printReport(body, 'تقرير جرد المخزون');
+  });
+}
+
 function renderAdminReturns(){
   const returns = [...DB.returns].sort((a,b)=> new Date(b.date)-new Date(a.date));
   const recentOrders = [...DB.orders].sort((a,b)=> new Date(b.date)-new Date(a.date)).slice(0,30);
@@ -3667,6 +3828,7 @@ function bindDynamic(){
   if(btnLogoutAdmin) btnLogoutAdmin.addEventListener('click', ()=>{ DB.adminAuthed=false; saveDB(); setNav('shop'); });
   const btnRefreshData = document.getElementById('btnRefreshData');
   if(btnRefreshData) btnRefreshData.addEventListener('click', ()=> manualRefreshData(btnRefreshData));
+  bindAdminReportsButtons(c);
 
   // dashboard
   const btnExportExcel = document.getElementById('btnExportExcel');
@@ -3765,9 +3927,16 @@ function bindDynamic(){
     const amount = Number(document.getElementById('exAmount').value);
     const note = document.getElementById('exNote').value.trim();
     if(!amount || amount<=0){ toast('أدخل مبلغ صحيح','err'); return; }
-    DB.expenses.push({id:uid('e_'), type, note, amount, date:new Date().toISOString().slice(0,10)});
+    DB.expenses.push({id:uid('e_'), type, note, amount, date:new Date().toISOString().slice(0,10), receiptImages:(window._exImages||[]).slice()});
+    window._exImages = [];
     saveDB(); toast('تمت إضافة المصروف ✓','ok'); render();
   });
+  const exImagesPreviewBox = document.getElementById('exImagesPreview');
+  if(exImagesPreviewBox){ if(!window._exImages) window._exImages=[]; renderExImagesPreview('exImagesPreview', window._exImages); }
+  const exCameraUpload = document.getElementById('exCameraUpload');
+  if(exCameraUpload) exCameraUpload.addEventListener('change', e=>{ if(e.target.files.length) handleExpenseImageFiles(e.target.files, 'exImagesPreview', window._exImages); e.target.value=''; });
+  const exGalleryUpload = document.getElementById('exGalleryUpload');
+  if(exGalleryUpload) exGalleryUpload.addEventListener('change', e=>{ if(e.target.files.length) handleExpenseImageFiles(e.target.files, 'exImagesPreview', window._exImages); e.target.value=''; });
   c.querySelectorAll('[data-del-expense]').forEach(el=> el.addEventListener('click', ()=>{ if(!confirm('حذف هذا المصروف؟')) return; DB.expenses = DB.expenses.filter(x=>x.id!==el.dataset.delExpense); saveDB(); render(); toast('تم حذف المصروف','ok'); }));
   c.querySelectorAll('[data-edit-expense]').forEach(el=> el.addEventListener('click', ()=> openExpenseForm(el.dataset.editExpense)));
 
@@ -3883,6 +4052,10 @@ function bindSheetDynamic(){
   if(btnSaveCustomer) btnSaveCustomer.addEventListener('click', ()=> saveCustomer(btnSaveCustomer.dataset.cid || null));
   const btnSaveExpense = sheet.querySelector('#btnSaveExpense');
   if(btnSaveExpense) btnSaveExpense.addEventListener('click', ()=> saveExpense(btnSaveExpense.dataset.eid));
+  const exEditCameraUpload = sheet.querySelector('#exEditCameraUpload');
+  if(exEditCameraUpload) exEditCameraUpload.addEventListener('change', e=>{ if(e.target.files.length) handleExpenseImageFiles(e.target.files, 'exEditImagesPreview', window._exEditImages); e.target.value=''; });
+  const exEditGalleryUpload = sheet.querySelector('#exEditGalleryUpload');
+  if(exEditGalleryUpload) exEditGalleryUpload.addEventListener('change', e=>{ if(e.target.files.length) handleExpenseImageFiles(e.target.files, 'exEditImagesPreview', window._exEditImages); e.target.value=''; });
   const btnSaveOrder = sheet.querySelector('#btnSaveOrder');
   if(btnSaveOrder) btnSaveOrder.addEventListener('click', ()=> saveOrderEdit(btnSaveOrder.dataset.oid));
   const btnSaveShipping = sheet.querySelector('#btnSaveShipping');
